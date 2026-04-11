@@ -81,7 +81,6 @@ def test_web_watcher_events_replace_browser_window_events():
             "timestamp": "2026-04-11T10:00:00.000000+00:00",
             "duration": 120.0,
             "data": {
-                "app": "Google Chrome",
                 "title": "GitHub",
                 "url": "https://github.com/x/y",
             },

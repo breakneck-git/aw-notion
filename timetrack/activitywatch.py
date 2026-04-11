@@ -4,6 +4,23 @@ import requests
 from .blocks import AWEvent, AFKEvent
 
 
+_BROWSER_APP_MAP = {
+    "chrome": "Google Chrome",
+    "chromium": "Chromium",
+    "firefox": "Firefox",
+    "safari": "Safari",
+    "brave": "Brave Browser",
+    "opera": "Opera",
+    "edge": "Microsoft Edge",
+}
+
+
+def _browser_app(bucket_id: str) -> str:
+    """Derive browser app name from web watcher bucket ID."""
+    suffix = bucket_id.removeprefix("aw-watcher-web-").split("_")[0].lower()
+    return _BROWSER_APP_MAP.get(suffix, suffix.capitalize())
+
+
 class ActivityWatchClient:
     def __init__(self, base_url: str = "http://localhost:5600"):
         self.base_url = base_url.rstrip("/")
@@ -50,10 +67,10 @@ class ActivityWatchClient:
         for bucket_id in buckets:
             if not bucket_id.startswith("aw-watcher-web"):
                 continue
+            app = _browser_app(bucket_id)
+            web_apps.add(app)
             for e in self._fetch_events(bucket_id, start, end):
                 ts = datetime.fromisoformat(e["timestamp"]).astimezone(timezone.utc)
-                app = e["data"].get("app", "Browser")
-                web_apps.add(app)
                 web_events.append(AWEvent(
                     timestamp=ts,
                     duration=float(e["duration"]),

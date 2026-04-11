@@ -1,0 +1,7 @@
+[Unit]
+Description=Sync ActivityWatch focus blocks to Notion Time Log
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=BIN_PATH sync

@@ -1,6 +1,6 @@
 # aw-notion
 
-Sync [ActivityWatch](https://activitywatch.net/) focus blocks to a Notion Time Log database. macOS-only.
+Sync [ActivityWatch](https://activitywatch.net/) focus blocks to a Notion Time Log database. macOS and Linux.
 
 ## What it does
 
@@ -11,7 +11,7 @@ Sync [ActivityWatch](https://activitywatch.net/) focus blocks to a Notion Time L
 
 ## Requirements
 
-- macOS (uses `launchd`)
+- macOS (uses `launchd`) or Linux (uses `systemd --user` units)
 - Python 3.11+
 - [ActivityWatch](https://activitywatch.net/) running locally
 - Notion integration token + a database with the schema below
@@ -41,9 +41,10 @@ cd aw-notion
 ```
 
 The install script will:
-- Create a `.venv` and editable-install the package
+- Detect a Python 3.11+ interpreter, create a `.venv`, and editable-install the package
 - Seed `~/.config/aw-notion/config.toml` from `config.toml.example` if missing
-- Install and load `~/Library/LaunchAgents/com.aw-notion.sync.plist` (15-min interval)
+- On **macOS**: install and load `~/Library/LaunchAgents/com.aw-notion.sync.plist` (15-min `launchd` interval)
+- On **Linux**: install `aw-notion.service` + `aw-notion.timer` into `~/.config/systemd/user/` and `systemctl --user enable --now aw-notion.timer` (15-min interval)
 
 Then **edit `~/.config/aw-notion/config.toml`** and fill in:
 - `notion.token` — your integration token from <https://www.notion.so/my-integrations>
@@ -59,14 +60,26 @@ aw-notion sync --since 2026-04-01T00:00:00    # forced backfill from a specific 
 aw-notion sync --help
 ```
 
-The launchd agent runs `aw-notion sync` automatically every 15 minutes after install. Logs at `~/Library/Logs/aw-notion/sync.log`.
+The scheduled agent runs `aw-notion sync` automatically every 15 minutes after install.
 
-### launchd controls
+### Service controls
+
+**macOS** (logs at `~/Library/Logs/aw-notion/sync.log`):
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.aw-notion.sync.plist
 launchctl load ~/Library/LaunchAgents/com.aw-notion.sync.plist
+launchctl kickstart -k gui/$(id -u)/com.aw-notion.sync   # force a sync
 tail -f ~/Library/Logs/aw-notion/sync.log
+```
+
+**Linux** (logs captured by systemd journal):
+
+```bash
+systemctl --user disable --now aw-notion.timer
+systemctl --user enable --now aw-notion.timer
+systemctl --user start aw-notion.service                 # force a sync
+journalctl --user -u aw-notion.service -f
 ```
 
 ## Configuration

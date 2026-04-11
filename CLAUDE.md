@@ -4,32 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`aw-notion` is a macOS-only CLI that pulls window/AFK/web events from a locally running [ActivityWatch](https://activitywatch.net/) instance, compresses them into "focus blocks," and writes each block as a row to a Notion "Time Log" database. A launchd agent runs `aw-notion sync` every 15 minutes. Python package: `aw_notion`.
+`aw-notion` is a macOS + Linux CLI that pulls window/AFK/web events from a locally running [ActivityWatch](https://activitywatch.net/) instance, compresses them into "focus blocks," and writes each block as a row to a Notion "Time Log" database. A `launchd` agent (macOS) or `systemd --user` timer (Linux) runs `aw-notion sync` every 15 minutes. Python package: `aw_notion`.
 
 ## Commands
 
 ```bash
-# First-time install (creates .venv, seeds ~/.config/aw-notion/config.toml from config.toml.example, loads launchd agent)
+# First-time install (detects python3.11+, creates .venv, seeds config, loads launchd OR systemd agent)
 ./install.sh
 
 # Editable install into an existing venv
 pip install -e .
-pip install pytest responses pytest-httpx  # dev deps from pyproject.toml [dependency-groups.dev]
+pip install pytest responses pytest-httpx ruff  # dev deps from pyproject.toml [dependency-groups.dev]
 
 # Run one sync manually
 .venv/bin/aw-notion sync
 .venv/bin/aw-notion sync --dry-run
 .venv/bin/aw-notion sync --since 2026-04-01T00:00:00
 
-# Tests
+# Tests + lint
 .venv/bin/pytest                                              # full suite
 .venv/bin/pytest tests/test_blocks.py                         # one file
 .venv/bin/pytest tests/test_blocks.py::test_afk_event_filters_window_events  # one test
+.venv/bin/ruff check aw_notion tests                          # lint
+.venv/bin/ruff format aw_notion tests                         # format
 
-# launchd agent controls (after install.sh)
+# Scheduled agent controls — macOS (launchd)
 launchctl unload ~/Library/LaunchAgents/com.aw-notion.sync.plist
 launchctl load ~/Library/LaunchAgents/com.aw-notion.sync.plist
 tail -f ~/Library/Logs/aw-notion/sync.log
+
+# Scheduled agent controls — Linux (systemd --user)
+systemctl --user disable --now aw-notion.timer
+systemctl --user enable --now aw-notion.timer
+journalctl --user -u aw-notion.service -f
 ```
 
 Python 3.11+ is required (uses `tomllib` and `zoneinfo`).
@@ -59,9 +66,9 @@ ActivityWatch REST  ->  compute_focus_blocks  ->  NotionTimeLogClient
 
 5. **Incremental vs initial sync.** When `state.last_sync` is `None` (first run or missing state file), `cli.sync` fetches `cfg.sync.initial_sync_days` of history. Otherwise it fetches from `last_sync - 30 minutes`. The 30-minute overlap is safe because of signature dedup. `--since ISO8601` overrides this for forced backfill.
 
-6. **Error handling intentionally fails fast.** If Notion page creation raises, `cli.sync` saves state (so successful entries up to that point are recorded) and calls `sys.exit(1)`. The launchd agent then retries on its next interval. Do not wrap this in broad `try/except` that swallows failures — the fail-fast behavior is load-bearing for debugging.
+6. **Error handling intentionally fails fast.** If Notion page creation raises, `cli.sync` saves state (so successful entries up to that point are recorded) and calls `sys.exit(1)`. The scheduled agent (launchd on macOS, systemd timer on Linux) then retries on its next interval. Do not wrap this in broad `try/except` that swallows failures — the fail-fast behavior is load-bearing for debugging.
 
-7. **Concurrency safety.** `cli.sync` acquires `~/.config/aw-notion/sync.lock` via `fcntl.flock(LOCK_EX | LOCK_NB)` before any Notion writes. A manual `aw-notion sync` running while the launchd agent fires will exit cleanly with "another sync in progress, skipping" instead of duplicating Notion entries.
+7. **Concurrency safety.** `cli.sync` acquires `~/.config/aw-notion/sync.lock` via `fcntl.flock(LOCK_EX | LOCK_NB)` before any Notion writes. A manual `aw-notion sync` running while the scheduled agent fires will exit cleanly with "another sync in progress, skipping" instead of duplicating Notion entries.
 
 8. **Atomic state writes.** `State.save` writes to `state.json.tmp` then `os.replace`s. A SIGKILL mid-write cannot leave a half-written `state.json`.
 

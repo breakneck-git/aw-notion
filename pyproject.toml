@@ -14,6 +14,7 @@ keywords = ["activitywatch", "notion", "time-tracking", "productivity", "macos"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business :: Scheduling",

@@ -3,19 +3,31 @@ set -e
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$INSTALL_DIR/.venv"
-LOG_DIR="$HOME/Library/Logs/aw-notion"
 CONFIG_DIR="$HOME/.config/aw-notion"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 CONFIG_TEMPLATE="$INSTALL_DIR/config.toml.example"
-PLIST_SRC="$INSTALL_DIR/com.aw-notion.sync.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.aw-notion.sync.plist"
 
-echo "Creating venv and installing aw-notion..."
-python3.11 -m venv "$VENV_DIR"
+OS="$(uname -s)"
+
+PYTHON_BIN=""
+for candidate in python3.11 python3.12 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        if "$candidate" -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    fi
+done
+if [ -z "$PYTHON_BIN" ]; then
+    echo "Error: Python 3.11+ not found in PATH."
+    echo "  macOS: brew install python@3.11"
+    echo "  Linux: apt install python3.11  |  dnf install python3.11  |  pacman -S python"
+    exit 1
+fi
+
+echo "Creating venv and installing aw-notion (using $PYTHON_BIN)..."
+"$PYTHON_BIN" -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install -q -e "$INSTALL_DIR"
-
-echo "Creating log directory..."
-mkdir -p "$LOG_DIR"
 
 echo "Creating config directory..."
 mkdir -p "$CONFIG_DIR"
@@ -27,16 +39,43 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "     • notion.token       (https://www.notion.so/my-integrations)"
     echo "     • notion.timelog_db  (UUID from your Notion database URL)"
     echo "     • timezone           (your IANA zone)"
-    echo "   Then re-run: launchctl kickstart -k gui/\$(id -u)/com.aw-notion.sync"
 fi
 
-echo "Installing launchd service..."
-sed -e "s|BIN_PATH|$VENV_DIR/bin/aw-notion|g" \
-    -e "s|LOG_DIR|$LOG_DIR|g" \
-    "$PLIST_SRC" > "$PLIST_DST"
+if [ "$OS" = "Darwin" ]; then
+    LOG_DIR="$HOME/Library/Logs/aw-notion"
+    PLIST_SRC="$INSTALL_DIR/com.aw-notion.sync.plist"
+    PLIST_DST="$HOME/Library/LaunchAgents/com.aw-notion.sync.plist"
 
-launchctl unload "$PLIST_DST" 2>/dev/null || true
-launchctl load "$PLIST_DST"
+    echo "Installing launchd service (macOS)..."
+    mkdir -p "$LOG_DIR"
+    sed -e "s|BIN_PATH|$VENV_DIR/bin/aw-notion|g" \
+        -e "s|LOG_DIR|$LOG_DIR|g" \
+        "$PLIST_SRC" > "$PLIST_DST"
 
-echo "✓ aw-notion installed. Syncs every 15 min."
-echo "  Logs: $LOG_DIR/sync.log"
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+    launchctl load "$PLIST_DST"
+
+    echo "✓ aw-notion installed. Syncs every 15 min."
+    echo "  Logs:         $LOG_DIR/sync.log"
+    echo "  Force resync: launchctl kickstart -k gui/\$(id -u)/com.aw-notion.sync"
+elif [ "$OS" = "Linux" ]; then
+    SYSTEMD_DIR="$HOME/.config/systemd/user"
+    SERVICE_SRC="$INSTALL_DIR/aw-notion.service"
+    TIMER_SRC="$INSTALL_DIR/aw-notion.timer"
+
+    echo "Installing systemd user service (Linux)..."
+    mkdir -p "$SYSTEMD_DIR"
+    sed -e "s|BIN_PATH|$VENV_DIR/bin/aw-notion|g" \
+        "$SERVICE_SRC" > "$SYSTEMD_DIR/aw-notion.service"
+    cp "$TIMER_SRC" "$SYSTEMD_DIR/aw-notion.timer"
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now aw-notion.timer
+
+    echo "✓ aw-notion installed. Syncs every 15 min."
+    echo "  Logs:         journalctl --user -u aw-notion.service -f"
+    echo "  Force resync: systemctl --user start aw-notion.service"
+else
+    echo "Error: unsupported OS: $OS (only Darwin and Linux are supported)"
+    exit 1
+fi

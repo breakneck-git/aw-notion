@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "timetrack"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "notion-client>=2.3.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+timetrack = "timetrack.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "responses>=0.25.3",
+]

@@ -3,5 +3,19 @@ __pycache__/
 *.pyc
 *.egg-info/
 .eggs/
+build/
 dist/
 .pytest_cache/
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# Defensive — config + state live in ~/.config and ~/Library, not in repo,
+# but ignore them at repo root in case anyone copies them in by accident.
+config.toml
+state.json
+sync.lock
+*.log

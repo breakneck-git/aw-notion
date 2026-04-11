@@ -1,0 +1,40 @@
+# aw-notion config template.
+# Copy this file to ~/.config/aw-notion/config.toml and fill in your values.
+# install.sh does this automatically on first run.
+
+# IANA timezone — used to localize block start/end before writing to Notion.
+# Examples: "UTC", "Europe/Moscow", "America/New_York"
+timezone = "UTC"
+
+[notion]
+# Get your integration token at https://www.notion.so/my-integrations
+token = "YOUR_NOTION_INTEGRATION_TOKEN"
+
+# UUID of your Notion Time Log database (32 hex chars from the database URL).
+# Don't forget to share the database with your integration:
+#   Notion → database page → Connections → Add connections.
+timelog_db = "YOUR_NOTION_DATABASE_ID"
+
+# Optional: override Notion property names if your DB uses different labels
+# (e.g. localized to your language). Defaults match the README schema table.
+# [notion.fields]
+# entry            = "Entry"
+# start            = "Start"
+# end              = "End"
+# duration_minutes = "Duration"
+# app              = "App"
+# url              = "URL"
+# sorted           = "Sorted"
+
+[activitywatch]
+base_url = "http://localhost:5600"
+# Gap longer than this (in minutes) between events forces a new focus block.
+afk_threshold_min = 10
+# Drop blocks shorter than this (active seconds, not wall time).
+min_block_duration_sec = 120
+# Same-app/title gap shorter than this is merged into one block.
+merge_gap_sec = 180
+
+[sync]
+# How many days to backfill on the very first run (no state.json yet).
+initial_sync_days = 7

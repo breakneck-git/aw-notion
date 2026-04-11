@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from timetrack.blocks import AWEvent, AFKEvent, FocusBlock, compute_focus_blocks
+from aw_notion.blocks import AWEvent, AFKEvent, FocusBlock, compute_focus_blocks
 
 def dt(offset_sec: float) -> datetime:
     """Helper: UTC datetime at base + offset_sec."""

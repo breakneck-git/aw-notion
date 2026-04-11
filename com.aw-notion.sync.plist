@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.timetrack.sync</string>
+    <string>com.aw-notion.sync</string>
     <key>ProgramArguments</key>
     <array>
-        <string>TIMETRACK_BIN</string>
+        <string>BIN_PATH</string>
         <string>sync</string>
     </array>
     <key>StartInterval</key>

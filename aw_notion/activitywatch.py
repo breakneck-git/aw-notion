@@ -1,7 +1,12 @@
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 import requests
 
 from .blocks import AWEvent, AFKEvent
+
+log = logging.getLogger(__name__)
+
+_PAGE_LIMIT = 10000
 
 
 _BROWSER_APP_MAP = {
@@ -43,12 +48,24 @@ class ActivityWatchClient:
     def _fetch_events(
         self, bucket_id: str, start: datetime, end: datetime
     ) -> list[dict]:
-        return self._get(
-            f"/buckets/{bucket_id}/events",
-            start=start.isoformat(),
-            end=end.isoformat(),
-            limit=10000,
-        )
+        events: list[dict] = []
+        cursor = start
+        while cursor < end:
+            chunk_end = min(cursor + timedelta(days=1), end)
+            chunk = self._get(
+                f"/buckets/{bucket_id}/events",
+                start=cursor.isoformat(),
+                end=chunk_end.isoformat(),
+                limit=_PAGE_LIMIT,
+            )
+            events.extend(chunk)
+            if len(chunk) >= _PAGE_LIMIT:
+                log.warning(
+                    "Bucket %s hit page limit %d for %s..%s — data may be truncated",
+                    bucket_id, _PAGE_LIMIT, cursor.isoformat(), chunk_end.isoformat(),
+                )
+            cursor = chunk_end
+        return events
 
     def get_all_events(
         self, start: datetime, end: datetime

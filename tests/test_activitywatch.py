@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import responses as resp_mock
 import responses
-from timetrack.activitywatch import ActivityWatchClient
+from aw_notion.activitywatch import ActivityWatchClient
 
 BASE = "http://localhost:5600/api/0"
 
@@ -68,6 +68,33 @@ def test_get_all_events_returns_window_and_afk():
     assert window_events[0].duration == 300.0
     assert len(afk_events) == 1
     assert afk_events[0].status == "afk"
+
+@responses.activate
+def test_fetch_events_paginates_by_day():
+    buckets = {"aw-watcher-window_host": {"type": "currentwindow"}}
+    url = f"{BASE}/buckets/aw-watcher-window_host/events"
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets)
+    for i in range(3):
+        responses.add(
+            responses.GET,
+            url,
+            json=[{
+                "id": i,
+                "timestamp": f"2026-04-{10+i}T10:00:00.000000+00:00",
+                "duration": 200.0,
+                "data": {"app": "Code", "title": f"day {i}"},
+            }],
+        )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 10, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 4, 13, 0, 0, tzinfo=timezone.utc)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 3
+    titles = sorted(e.title for e in window)
+    assert titles == ["day 0", "day 1", "day 2"]
+    events_calls = [c for c in responses.calls if "/events" in c.request.url]
+    assert len(events_calls) == 3
+
 
 @responses.activate
 def test_web_watcher_events_replace_browser_window_events():

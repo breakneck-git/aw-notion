@@ -2,13 +2,25 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_PATH = Path.home() / ".config" / "timetrack" / "config.toml"
+CONFIG_PATH = Path.home() / ".config" / "aw-notion" / "config.toml"
+
+
+@dataclass
+class NotionFieldsConfig:
+    entry: str = "Entry"
+    start: str = "Start"
+    end: str = "End"
+    duration_minutes: str = "Duration"
+    app: str = "App"
+    url: str = "URL"
+    sorted: str = "Sorted"
 
 
 @dataclass
 class NotionConfig:
     token: str
     timelog_db: str
+    fields: NotionFieldsConfig = field(default_factory=NotionFieldsConfig)
 
 
 @dataclass
@@ -36,7 +48,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not path.exists():
         raise FileNotFoundError(
             f"Config not found: {path}\n"
-            "Create it — see config template in install.sh."
+            "Copy config.toml.example to that path and fill in your values."
         )
     with open(path, "rb") as f:
         data = tomllib.load(f)
@@ -44,11 +56,13 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     n = data["notion"]
     aw = data.get("activitywatch", {})
     s = data.get("sync", {})
+    fields = n.get("fields", {})
 
     return Config(
         notion=NotionConfig(
             token=n["token"],
             timelog_db=n["timelog_db"],
+            fields=NotionFieldsConfig(**fields),
         ),
         activitywatch=ActivityWatchConfig(**aw),
         sync=SyncConfig(**s),

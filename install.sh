@@ -3,12 +3,14 @@ set -e
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$INSTALL_DIR/.venv"
-LOG_DIR="$HOME/Library/Logs/timetrack"
-CONFIG_DIR="$HOME/.config/timetrack"
-PLIST_SRC="$INSTALL_DIR/com.timetrack.sync.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/com.timetrack.sync.plist"
+LOG_DIR="$HOME/Library/Logs/aw-notion"
+CONFIG_DIR="$HOME/.config/aw-notion"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+CONFIG_TEMPLATE="$INSTALL_DIR/config.toml.example"
+PLIST_SRC="$INSTALL_DIR/com.aw-notion.sync.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/com.aw-notion.sync.plist"
 
-echo "Creating venv and installing timetrack..."
+echo "Creating venv and installing aw-notion..."
 python3.11 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install -q -e "$INSTALL_DIR"
 
@@ -18,34 +20,23 @@ mkdir -p "$LOG_DIR"
 echo "Creating config directory..."
 mkdir -p "$CONFIG_DIR"
 
-if [ ! -f "$CONFIG_DIR/config.toml" ]; then
-    cat > "$CONFIG_DIR/config.toml" << 'EOF'
-timezone = "Europe/Moscow"  # Change to your IANA timezone
-
-[notion]
-token = "YOUR_NOTION_INTEGRATION_TOKEN"
-timelog_db = "35b4cfe8-1f3a-457a-80a8-fe61aa465a18"
-
-[activitywatch]
-base_url = "http://localhost:5600"
-afk_threshold_min = 10
-min_block_duration_sec = 120
-merge_gap_sec = 180
-
-[sync]
-initial_sync_days = 7
-EOF
-    echo "⚠️  Config created at $CONFIG_DIR/config.toml"
-    echo "   Fill in your Notion integration token before first sync."
+if [ ! -f "$CONFIG_FILE" ]; then
+    cp "$CONFIG_TEMPLATE" "$CONFIG_FILE"
+    echo "⚠️  Config created at $CONFIG_FILE"
+    echo "   Edit it and fill in:"
+    echo "     • notion.token       (https://www.notion.so/my-integrations)"
+    echo "     • notion.timelog_db  (UUID from your Notion database URL)"
+    echo "     • timezone           (your IANA zone)"
+    echo "   Then re-run: launchctl kickstart -k gui/\$(id -u)/com.aw-notion.sync"
 fi
 
 echo "Installing launchd service..."
-sed -e "s|TIMETRACK_BIN|$VENV_DIR/bin/timetrack|g" \
+sed -e "s|BIN_PATH|$VENV_DIR/bin/aw-notion|g" \
     -e "s|LOG_DIR|$LOG_DIR|g" \
     "$PLIST_SRC" > "$PLIST_DST"
 
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 
-echo "✓ timetrack installed. Syncs every 15 min."
+echo "✓ aw-notion installed. Syncs every 15 min."
 echo "  Logs: $LOG_DIR/sync.log"

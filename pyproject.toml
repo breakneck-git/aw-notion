@@ -3,16 +3,33 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "timetrack"
+name = "aw-notion"
 version = "0.1.0"
+description = "Sync ActivityWatch focus blocks to a Notion Time Log database (macOS, launchd)"
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "breakneck", email = "breakneck.mail@gmail.com" }]
+keywords = ["activitywatch", "notion", "time-tracking", "productivity", "macos"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Scheduling",
+]
 dependencies = [
     "notion-client>=3.0.0",
     "requests>=2.31.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/breakneck-git/aw-notion"
+Repository = "https://github.com/breakneck-git/aw-notion"
+Issues = "https://github.com/breakneck-git/aw-notion/issues"
+
 [project.scripts]
-timetrack = "timetrack.cli:main"
+aw-notion = "aw_notion.cli:main"
 
 [dependency-groups]
 dev = [

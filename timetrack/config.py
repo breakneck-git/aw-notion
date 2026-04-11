@@ -50,14 +50,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
             token=n["token"],
             timelog_db=n["timelog_db"],
         ),
-        activitywatch=ActivityWatchConfig(
-            base_url=aw.get("base_url", "http://localhost:5600"),
-            afk_threshold_min=aw.get("afk_threshold_min", 10),
-            min_block_duration_sec=aw.get("min_block_duration_sec", 120),
-            merge_gap_sec=aw.get("merge_gap_sec", 180),
-        ),
-        sync=SyncConfig(
-            initial_sync_days=s.get("initial_sync_days", 7),
-        ),
+        activitywatch=ActivityWatchConfig(**aw),
+        sync=SyncConfig(**s),
         timezone=data.get("timezone", "UTC"),
     )

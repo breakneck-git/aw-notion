@@ -1,13 +1,13 @@
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
 @dataclass
 class AWEvent:
-    timestamp: datetime   # UTC-aware
-    duration: float       # seconds
+    timestamp: datetime  # UTC-aware
+    duration: float  # seconds
     app: str
     title: str
     url: str | None = None
@@ -15,9 +15,9 @@ class AWEvent:
 
 @dataclass
 class AFKEvent:
-    timestamp: datetime   # UTC-aware
-    duration: float       # seconds
-    status: str           # "afk" | "not-afk"
+    timestamp: datetime  # UTC-aware
+    duration: float  # seconds
+    status: str  # "afk" | "not-afk"
 
 
 @dataclass
@@ -89,9 +89,12 @@ def compute_focus_blocks(
             if cur.active_seconds >= min_duration_sec:
                 blocks.append(cur)
             cur = FocusBlock(
-                app=event.app, title=event.title,
-                start_utc=event.timestamp, end_utc=event_end,
-                active_seconds=event.duration, url=event.url,
+                app=event.app,
+                title=event.title,
+                start_utc=event.timestamp,
+                end_utc=event_end,
+                active_seconds=event.duration,
+                url=event.url,
             )
         elif same and gap_sec <= merge_gap_sec:
             cur.end_utc = event_end
@@ -100,9 +103,12 @@ def compute_focus_blocks(
             if cur.active_seconds >= min_duration_sec:
                 blocks.append(cur)
             cur = FocusBlock(
-                app=event.app, title=event.title,
-                start_utc=event.timestamp, end_utc=event_end,
-                active_seconds=event.duration, url=event.url,
+                app=event.app,
+                title=event.title,
+                start_utc=event.timestamp,
+                end_utc=event_end,
+                active_seconds=event.duration,
+                url=event.url,
             )
 
     if cur.active_seconds >= min_duration_sec:

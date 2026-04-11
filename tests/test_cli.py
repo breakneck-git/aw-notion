@@ -1,7 +1,7 @@
 import fcntl
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -100,7 +100,7 @@ def test_sync_dry_run_does_not_write_state(sync_env):
 
 def test_sync_since_overrides_start(sync_env):
     sync(dry_run=True, since="2026-04-05T00:00:00")
-    expected = datetime(2026, 4, 5, 0, 0, tzinfo=timezone.utc)
+    expected = datetime(2026, 4, 5, 0, 0, tzinfo=UTC)
     assert sync_env["aw_start"] == expected
 
 
@@ -124,9 +124,7 @@ def test_main_parses_since(monkeypatch):
         captured["since"] = since
 
     monkeypatch.setattr(cli, "sync", fake_sync)
-    monkeypatch.setattr(
-        "sys.argv", ["aw-notion", "sync", "--since", "2026-04-05T00:00:00"]
-    )
+    monkeypatch.setattr("sys.argv", ["aw-notion", "sync", "--since", "2026-04-05T00:00:00"])
     main()
     assert captured["since"] == "2026-04-05T00:00:00"
 

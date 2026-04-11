@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 STATE_PATH = Path.home() / ".config" / "aw-notion" / "state.json"
@@ -45,7 +45,7 @@ class State:
                 continue
             ts = datetime.fromisoformat(created_at)
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.replace(tzinfo=UTC)
             if ts >= cutoff:
                 kept[sig] = val
         return kept

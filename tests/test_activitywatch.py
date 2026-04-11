@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
-import responses as resp_mock
+from datetime import UTC, datetime
+
 import responses
+
 from aw_notion.activitywatch import ActivityWatchClient
 
 BASE = "http://localhost:5600/api/0"
@@ -34,17 +35,20 @@ AFK_EVENTS = [
     }
 ]
 
+
 @responses.activate
 def test_is_running_true():
     responses.add(responses.GET, f"{BASE}/info", json={"version": "0.12"})
     client = ActivityWatchClient()
     assert client.is_running() is True
 
+
 @responses.activate
 def test_is_running_false_when_connection_error():
     # No mock registered → connection error
     client = ActivityWatchClient()
     assert client.is_running() is False
+
 
 @responses.activate
 def test_get_all_events_returns_window_and_afk():
@@ -60,14 +64,15 @@ def test_get_all_events_returns_window_and_afk():
         json=AFK_EVENTS,
     )
     client = ActivityWatchClient()
-    start = datetime(2026, 4, 11, 10, 0, tzinfo=timezone.utc)
-    end = datetime(2026, 4, 11, 11, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
     window_events, afk_events = client.get_all_events(start, end)
     assert len(window_events) == 2
     assert window_events[0].app == "Code"
     assert window_events[0].duration == 300.0
     assert len(afk_events) == 1
     assert afk_events[0].status == "afk"
+
 
 @responses.activate
 def test_fetch_events_paginates_by_day():
@@ -78,16 +83,18 @@ def test_fetch_events_paginates_by_day():
         responses.add(
             responses.GET,
             url,
-            json=[{
-                "id": i,
-                "timestamp": f"2026-04-{10+i}T10:00:00.000000+00:00",
-                "duration": 200.0,
-                "data": {"app": "Code", "title": f"day {i}"},
-            }],
+            json=[
+                {
+                    "id": i,
+                    "timestamp": f"2026-04-{10 + i}T10:00:00.000000+00:00",
+                    "duration": 200.0,
+                    "data": {"app": "Code", "title": f"day {i}"},
+                }
+            ],
         )
     client = ActivityWatchClient()
-    start = datetime(2026, 4, 10, 0, 0, tzinfo=timezone.utc)
-    end = datetime(2026, 4, 13, 0, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 4, 10, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 13, 0, 0, tzinfo=UTC)
     window, _ = client.get_all_events(start, end)
     assert len(window) == 3
     titles = sorted(e.title for e in window)
@@ -139,8 +146,8 @@ def test_web_watcher_events_replace_browser_window_events():
         json=web_events,
     )
     client = ActivityWatchClient()
-    start = datetime(2026, 4, 11, 10, 0, tzinfo=timezone.utc)
-    end = datetime(2026, 4, 11, 11, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
     window, _ = client.get_all_events(start, end)
     # Chrome window event should be replaced by web event (with URL)
     chrome_events = [e for e in window if e.app == "Google Chrome"]

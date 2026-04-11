@@ -1,4 +1,5 @@
 from zoneinfo import ZoneInfo
+
 from notion_client import Client
 
 from .blocks import FocusBlock

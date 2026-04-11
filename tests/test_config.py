@@ -1,6 +1,7 @@
-from pathlib import Path
 import pytest
-from aw_notion.config import load_config, Config, NotionConfig, NotionFieldsConfig
+
+from aw_notion.config import load_config
+
 
 def test_load_config(tmp_path):
     cfg_file = tmp_path / "config.toml"
@@ -22,9 +23,11 @@ afk_threshold_min = 15
     assert cfg.activitywatch.min_block_duration_sec == 120  # default
     assert cfg.sync.initial_sync_days == 7  # default
 
+
 def test_missing_config_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "nonexistent.toml")
+
 
 def test_defaults(tmp_path):
     cfg_file = tmp_path / "config.toml"

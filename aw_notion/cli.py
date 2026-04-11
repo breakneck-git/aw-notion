@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -51,8 +51,8 @@ def sync(dry_run: bool = False, since: str | None = None) -> None:
 def _parse_since(since: str) -> datetime:
     dt = datetime.fromisoformat(since)
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _run_sync(dry_run: bool, since: str | None) -> None:
@@ -64,7 +64,7 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
         log.warning("ActivityWatch is not running, skipping sync")
         return
 
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     if since is not None:
         start = _parse_since(since)
@@ -87,9 +87,7 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
     log.info("Found %d focus blocks in range", len(blocks))
 
     notion = (
-        NotionTimeLogClient(
-            cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields
-        )
+        NotionTimeLogClient(cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields)
         if not dry_run
         else None
     )
@@ -104,7 +102,10 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
         if dry_run:
             log.info(
                 "DRY RUN would create: sig=%s app=%s title=%r minutes=%d",
-                sig[:8], block.app, block.title, block.active_minutes(),
+                sig[:8],
+                block.app,
+                block.title,
+                block.active_minutes(),
             )
             new_count += 1
             continue
@@ -114,7 +115,7 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
             page_id = notion.create_entry(block, tz)
             state.notion_entries[sig] = {
                 "page_id": page_id,
-                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+                "created_at": datetime.now(tz=UTC).isoformat(),
             }
             new_count += 1
         except Exception as exc:
@@ -125,9 +126,7 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
     if not dry_run:
         state.last_sync = now
         state.save(STATE_PATH)
-    log.info(
-        "Synced %d new entries%s", new_count, " (dry-run)" if dry_run else ""
-    )
+    log.info("Synced %d new entries%s", new_count, " (dry-run)" if dry_run else "")
 
 
 def main() -> None:

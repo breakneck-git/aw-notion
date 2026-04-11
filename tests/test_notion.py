@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 import json
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
 import httpx
 
 from aw_notion.blocks import FocusBlock
@@ -11,15 +12,17 @@ DB_ID = "00000000-0000-0000-0000-000000000000"
 TOKEN = "secret_test"
 TZ = ZoneInfo("Europe/Moscow")
 
+
 def make_block(url=None) -> FocusBlock:
     return FocusBlock(
         app="Code",
         title="activitywatch.py — aw_notion — VS Code",
-        start_utc=datetime(2026, 4, 11, 7, 0, 0, tzinfo=timezone.utc),
-        end_utc=datetime(2026, 4, 11, 7, 23, 10, tzinfo=timezone.utc),
+        start_utc=datetime(2026, 4, 11, 7, 0, 0, tzinfo=UTC),
+        end_utc=datetime(2026, 4, 11, 7, 23, 10, tzinfo=UTC),
         active_seconds=1390.0,
         url=url,
     )
+
 
 def test_create_entry_returns_page_id(httpx_mock):
     httpx_mock.add_response(
@@ -31,6 +34,7 @@ def test_create_entry_returns_page_id(httpx_mock):
     client = NotionTimeLogClient(TOKEN, DB_ID)
     page_id = client.create_entry(make_block(), TZ)
     assert page_id == "page-abc-123"
+
 
 def test_create_entry_payload_includes_required_fields(httpx_mock):
     captured = {}
@@ -109,6 +113,7 @@ def test_create_entry_omits_url_property_when_absent(httpx_mock):
 
     assert "URL" not in captured["body"]["properties"]
 
+
 def test_create_entry_uses_configured_field_names(httpx_mock):
     captured = {}
 
@@ -156,8 +161,8 @@ def test_create_entry_title_truncated_at_100_chars(httpx_mock):
     long_title_block = FocusBlock(
         app="Code",
         title="x" * 150,
-        start_utc=datetime(2026, 4, 11, 7, 0, 0, tzinfo=timezone.utc),
-        end_utc=datetime(2026, 4, 11, 7, 5, 0, tzinfo=timezone.utc),
+        start_utc=datetime(2026, 4, 11, 7, 0, 0, tzinfo=UTC),
+        end_utc=datetime(2026, 4, 11, 7, 5, 0, tzinfo=UTC),
         active_seconds=200.0,
     )
     client = NotionTimeLogClient(TOKEN, DB_ID)

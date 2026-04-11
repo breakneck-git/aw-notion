@@ -1,9 +1,11 @@
-from datetime import datetime, timedelta, timezone
-from aw_notion.blocks import AWEvent, AFKEvent, FocusBlock, compute_focus_blocks
+from datetime import UTC, datetime, timedelta
+
+from aw_notion.blocks import AFKEvent, AWEvent, compute_focus_blocks
+
 
 def dt(offset_sec: float) -> datetime:
     """Helper: UTC datetime at base + offset_sec."""
-    base = datetime(2026, 4, 11, 10, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 4, 11, 10, 0, 0, tzinfo=UTC)
     return base + timedelta(seconds=offset_sec)
 
 
@@ -23,10 +25,12 @@ def test_single_event_above_minimum():
     assert blocks[0].title == "file.py"
     assert blocks[0].active_seconds == 200
 
+
 def test_single_event_below_minimum_filtered():
     events = [win(0, 60, "Code", "file.py")]  # 60s < 120s min
     blocks = compute_focus_blocks(events, [])
     assert blocks == []
+
 
 def test_same_app_title_gap_under_merge_threshold_merges():
     events = [
@@ -37,6 +41,7 @@ def test_same_app_title_gap_under_merge_threshold_merges():
     assert len(blocks) == 1
     assert blocks[0].active_seconds == 200
 
+
 def test_same_app_title_gap_over_merge_threshold_splits():
     events = [
         win(0, 150, "Code", "file.py"),
@@ -44,6 +49,7 @@ def test_same_app_title_gap_over_merge_threshold_splits():
     ]
     blocks = compute_focus_blocks(events, [])
     assert len(blocks) == 2
+
 
 def test_different_app_creates_new_block():
     events = [
@@ -55,6 +61,7 @@ def test_different_app_creates_new_block():
     assert blocks[0].app == "Code"
     assert blocks[1].app == "Chrome"
 
+
 def test_afk_event_filters_window_events():
     events = [
         win(0, 200, "Code", "file.py"),
@@ -65,6 +72,7 @@ def test_afk_event_filters_window_events():
     assert len(blocks) == 1
     assert blocks[0].active_seconds == 200
 
+
 def test_afk_hard_boundary_separates_blocks():
     events = [
         win(0, 150, "Code", "file.py"),
@@ -73,20 +81,24 @@ def test_afk_hard_boundary_separates_blocks():
     blocks = compute_focus_blocks(events, [])
     assert len(blocks) == 2
 
+
 def test_url_preserved_in_block():
     events = [win(0, 200, "Chrome", "GitHub", url="https://github.com/x/y")]
     blocks = compute_focus_blocks(events, [])
     assert len(blocks) == 1
     assert blocks[0].url == "https://github.com/x/y"
 
+
 def test_empty_events_returns_empty():
     assert compute_focus_blocks([], []) == []
+
 
 def test_block_signature_is_stable():
     events = [win(0, 200, "Code", "file.py")]
     b1 = compute_focus_blocks(events, [])[0]
     b2 = compute_focus_blocks(events, [])[0]
     assert b1.signature() == b2.signature()
+
 
 def test_block_active_minutes_rounds():
     events = [win(0, 190, "Code", "file.py")]  # 190s = 3.16 min → rounds to 3

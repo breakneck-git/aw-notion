@@ -65,15 +65,6 @@ def test_afk_event_filters_window_events():
     assert len(blocks) == 1
     assert blocks[0].active_seconds == 200
 
-def test_afk_gap_over_threshold_is_hard_boundary():
-    events = [
-        win(0, 100, "Code", "file.py"),
-        win(800, 100, "Code", "file.py"),  # gap = 700s > 600s threshold
-    ]
-    blocks = compute_focus_blocks(events, [])
-    # Hard boundary: two separate blocks (both >= 100s... wait, 100s < 120s min)
-    # With min_duration_sec=120, both would be filtered. Let's use 150s.
-
 def test_afk_hard_boundary_separates_blocks():
     events = [
         win(0, 150, "Code", "file.py"),

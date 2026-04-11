@@ -1,30 +1,38 @@
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 import requests
 
 from .blocks import AFKEvent, AWEvent
+from .config import DEFAULT_BROWSER_APPS
 
 log = logging.getLogger(__name__)
 
 _PAGE_LIMIT = 10000
 
-
-_BROWSER_APP_MAP = {
-    "chrome": "Google Chrome",
-    "chromium": "Chromium",
-    "firefox": "Firefox",
-    "safari": "Safari",
-    "brave": "Brave Browser",
-    "opera": "Opera",
-    "edge": "Microsoft Edge",
-}
+_ZERO_DURATION_EPSILON = timedelta(seconds=1)
 
 
-def _browser_app(bucket_id: str) -> str:
-    """Derive browser app name from web watcher bucket ID."""
-    suffix = bucket_id.removeprefix("aw-watcher-web-").split("_")[0].lower()
-    return _BROWSER_APP_MAP.get(suffix, suffix.capitalize())
+def _find_url_by_overlap(
+    web_intervals: list[tuple[datetime, datetime, str]],
+    win_start: datetime,
+    win_end: datetime,
+) -> str | None:
+    """
+    Return the URL of the first web event whose interval overlaps
+    [win_start, win_end]. Zero-duration web events are treated as having
+    a tiny _ZERO_DURATION_EPSILON span so they can still match.
+
+    web_intervals must be sorted by start timestamp.
+    """
+    for ws, we, url in web_intervals:
+        if ws >= win_end:
+            break
+        effective_we = we if we > ws else ws + _ZERO_DURATION_EPSILON
+        if effective_we > win_start:
+            return url
+    return None
 
 
 class ActivityWatchClient:
@@ -68,56 +76,74 @@ class ActivityWatchClient:
         return events
 
     def get_all_events(
-        self, start: datetime, end: datetime
+        self,
+        start: datetime,
+        end: datetime,
+        browser_apps: Iterable[str] = DEFAULT_BROWSER_APPS,
     ) -> tuple[list[AWEvent], list[AFKEvent]]:
         """
         Returns (window_events, afk_events).
-        Web watcher events replace window watcher events for browser apps.
+
+        Window-watcher is the source of truth for app, title, and duration.
+        Web-watcher events only enrich window events with a URL, by matching
+        on timestamp overlap — but only for window events whose app is in
+        `browser_apps`. This is required because web-watcher keeps emitting
+        heartbeat events for the currently-selected tab even when the browser
+        is not in the foreground, which would otherwise leak browser URLs
+        onto unrelated window events (terminal, editor, chat app, ...).
         """
-        buckets: dict = self._get("/buckets")
+        browser_set = {a.casefold() for a in browser_apps}
+        buckets = self._get("/buckets")
 
-        web_apps: set[str] = set()
-        web_events: list[AWEvent] = []
-        afk_events: list[AFKEvent] = []
-
-        # First pass: web watcher (determines which apps it covers)
+        web_intervals: list[tuple[datetime, datetime, str]] = []
         for bucket_id in buckets:
             if not bucket_id.startswith("aw-watcher-web"):
                 continue
-            app = _browser_app(bucket_id)
-            web_apps.add(app)
             for e in self._fetch_events(bucket_id, start, end):
+                url = e["data"].get("url")
+                if not url:
+                    continue
                 ts = datetime.fromisoformat(e["timestamp"]).astimezone(UTC)
-                web_events.append(
-                    AWEvent(
-                        timestamp=ts,
-                        duration=float(e["duration"]),
-                        app=app,
-                        title=e["data"].get("title", ""),
-                        url=e["data"].get("url"),
-                    )
-                )
+                we = ts + timedelta(seconds=float(e["duration"]))
+                web_intervals.append((ts, we, url))
+        web_intervals.sort(key=lambda x: x[0])
 
-        # Second pass: window watcher (skip apps covered by web watcher)
         window_events: list[AWEvent] = []
         for bucket_id in buckets:
             if not bucket_id.startswith("aw-watcher-window"):
                 continue
             for e in self._fetch_events(bucket_id, start, end):
-                app = e["data"].get("app", "Unknown")
-                if app in web_apps:
-                    continue
                 ts = datetime.fromisoformat(e["timestamp"]).astimezone(UTC)
+                duration = float(e["duration"])
+                win_end = ts + timedelta(seconds=duration)
+                app = e["data"].get("app", "Unknown")
+                url = None
+                if app.casefold() in browser_set:
+                    url = _find_url_by_overlap(web_intervals, ts, win_end)
                 window_events.append(
                     AWEvent(
                         timestamp=ts,
-                        duration=float(e["duration"]),
+                        duration=duration,
                         app=app,
                         title=e["data"].get("title", ""),
+                        url=url,
                     )
                 )
 
-        # AFK watcher
+        # Backfill URLs within the same (app, title): web-watcher often emits
+        # URL events only when the user returns briefly to a tab, while the
+        # long window-watcher events for the same tab sit earlier without a
+        # temporal overlap. Since title is effectively per-tab, it's safe to
+        # propagate the URL to other window events of the same (app, title).
+        url_by_key: dict[tuple[str, str], str] = {}
+        for e in window_events:
+            if e.url:
+                url_by_key.setdefault((e.app, e.title), e.url)
+        for e in window_events:
+            if e.url is None:
+                e.url = url_by_key.get((e.app, e.title))
+
+        afk_events: list[AFKEvent] = []
         for bucket_id in buckets:
             if not bucket_id.startswith("aw-watcher-afk"):
                 continue
@@ -131,4 +157,4 @@ class ActivityWatchClient:
                     )
                 )
 
-        return window_events + web_events, afk_events
+        return window_events, afk_events

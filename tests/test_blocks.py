@@ -89,6 +89,22 @@ def test_url_preserved_in_block():
     assert blocks[0].url == "https://github.com/x/y"
 
 
+def test_url_backfilled_from_later_merged_event():
+    """
+    If the first event in a merged run has no URL but a subsequent merged
+    event does, the block must keep that URL. Regression guard: when
+    web-watcher arrived late into a sequence of same-(app,title) window
+    events, earlier aw-notion versions dropped the URL.
+    """
+    events = [
+        win(0, 100, "Comet", "GitHub - Comet", url=None),
+        win(150, 100, "Comet", "GitHub - Comet", url="https://github.com/x/y"),
+    ]
+    blocks = compute_focus_blocks(events, [])
+    assert len(blocks) == 1
+    assert blocks[0].url == "https://github.com/x/y"
+
+
 def test_empty_events_returns_empty():
     assert compute_focus_blocks([], []) == []
 

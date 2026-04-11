@@ -104,36 +104,54 @@ def test_fetch_events_paginates_by_day():
 
 
 @responses.activate
-def test_web_watcher_events_replace_browser_window_events():
+def test_web_events_enrich_overlapping_window_events_with_url():
+    """
+    Web-watcher events enrich window-watcher events with URL, they do NOT
+    replace them. The window event keeps its app/title/duration; the URL is
+    looked up by timestamp overlap with any web-watcher bucket.
+
+    This works for any chromium-based browser (Comet, Arc, Brave, etc.)
+    without requiring a browser-name mapping.
+    """
     buckets_with_web = {
         **BUCKETS,
-        "aw-watcher-web-chrome": {"type": "web.tab.current"},
+        "aw-watcher-web-comet_testhost": {"type": "web.tab.current"},
     }
-    web_events = [
+    # Sequential, non-overlapping window events (as window-watcher really produces).
+    window_events_with_browser = [
         {
-            "id": 10,
+            "id": 1,
             "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 300.0,
+            "data": {"app": "Code", "title": "file.py — VS Code"},
+        },
+        {
+            "id": 2,
+            "timestamp": "2026-04-11T10:05:00.000000+00:00",
             "duration": 120.0,
-            "data": {
-                "title": "GitHub",
-                "url": "https://github.com/x/y",
-            },
-        }
-    ]
-    window_events_with_chrome = [
-        *WINDOW_EVENTS,
+            "data": {"app": "Code", "title": "test.py — VS Code"},
+        },
         {
             "id": 5,
             "timestamp": "2026-04-11T10:07:00.000000+00:00",
             "duration": 120.0,
-            "data": {"app": "Google Chrome", "title": "GitHub"},
+            "data": {"app": "Comet", "title": "GitHub - Comet"},
         },
+    ]
+    # Web event is fully inside the Comet window event's span.
+    web_events = [
+        {
+            "id": 10,
+            "timestamp": "2026-04-11T10:07:30.000000+00:00",
+            "duration": 45.0,
+            "data": {"title": "GitHub", "url": "https://github.com/x/y"},
+        }
     ]
     responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_web)
     responses.add(
         responses.GET,
         f"{BASE}/buckets/aw-watcher-window_testhost/events",
-        json=window_events_with_chrome,
+        json=window_events_with_browser,
     )
     responses.add(
         responses.GET,
@@ -142,14 +160,232 @@ def test_web_watcher_events_replace_browser_window_events():
     )
     responses.add(
         responses.GET,
-        f"{BASE}/buckets/aw-watcher-web-chrome/events",
+        f"{BASE}/buckets/aw-watcher-web-comet_testhost/events",
         json=web_events,
     )
     client = ActivityWatchClient()
     start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
     end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
     window, _ = client.get_all_events(start, end)
-    # Chrome window event should be replaced by web event (with URL)
-    chrome_events = [e for e in window if e.app == "Google Chrome"]
-    assert len(chrome_events) == 1
-    assert chrome_events[0].url == "https://github.com/x/y"
+
+    # App name comes from window-watcher (Comet), not from bucket id.
+    comet_events = [e for e in window if e.app == "Comet"]
+    assert len(comet_events) == 1
+    assert comet_events[0].title == "GitHub - Comet"
+    assert comet_events[0].duration == 120.0
+    assert comet_events[0].url == "https://github.com/x/y"
+
+    # Non-browser window events are untouched.
+    code_events = [e for e in window if e.app == "Code"]
+    assert len(code_events) == 2
+    assert all(e.url is None for e in code_events)
+
+
+@responses.activate
+def test_web_events_with_zero_duration_still_match_window_event():
+    """Web-watcher sometimes emits zero-duration events on navigation."""
+    buckets_with_web = {
+        **BUCKETS,
+        "aw-watcher-web-comet_testhost": {"type": "web.tab.current"},
+    }
+    window_events = [
+        {
+            "id": 5,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 60.0,
+            "data": {"app": "Comet", "title": "Perplexity - Comet"},
+        },
+    ]
+    web_events = [
+        {
+            "id": 10,
+            "timestamp": "2026-04-11T10:00:15.000000+00:00",
+            "duration": 0.0,
+            "data": {"title": "Perplexity", "url": "https://perplexity.ai/"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_web)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-web-comet_testhost/events",
+        json=web_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 1
+    assert window[0].url == "https://perplexity.ai/"
+
+
+@responses.activate
+def test_non_browser_window_events_never_get_url_from_background_web_heartbeats():
+    """
+    Web-watcher keeps emitting heartbeat events for the currently-selected
+    tab even when the browser is NOT in the foreground. A terminal window
+    event whose span happens to cover one of those heartbeats must NOT get
+    that URL — app name filtering is what prevents this leak.
+    """
+    buckets_with_web = {
+        **BUCKETS,
+        "aw-watcher-web-comet_testhost": {"type": "web.tab.current"},
+    }
+    window_events = [
+        {
+            "id": 1,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 600.0,
+            "data": {"app": "Ghostty", "title": "~/code/aw-notion"},
+        },
+    ]
+    web_events = [
+        {
+            "id": 10,
+            "timestamp": "2026-04-11T10:05:00.000000+00:00",
+            "duration": 0.0,
+            "data": {"title": "GitHub", "url": "https://github.com/x/y"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_web)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-web-comet_testhost/events",
+        json=web_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 1
+    assert window[0].app == "Ghostty"
+    assert window[0].url is None
+
+
+@responses.activate
+def test_url_backfills_across_same_app_title_window_events():
+    """
+    If only one Comet window event for a given (app, title) had a temporal
+    overlap with a web event, the URL is propagated to other Comet window
+    events of the same (app, title) — even if they had no overlap of their
+    own. This matches reality: title ≈ per-tab, so the URL is effectively
+    a property of the tab, not of a specific moment.
+    """
+    buckets_with_web = {
+        **BUCKETS,
+        "aw-watcher-web-comet_testhost": {"type": "web.tab.current"},
+    }
+    # Two Comet events for the same tab: the first is long (no web overlap),
+    # the second is short (web event overlaps it).
+    window_events = [
+        {
+            "id": 1,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 300.0,
+            "data": {"app": "Comet", "title": "GitHub - Comet"},
+        },
+        {
+            "id": 2,
+            "timestamp": "2026-04-11T10:10:00.000000+00:00",
+            "duration": 60.0,
+            "data": {"app": "Comet", "title": "GitHub - Comet"},
+        },
+    ]
+    web_events = [
+        {
+            "id": 10,
+            "timestamp": "2026-04-11T10:10:30.000000+00:00",
+            "duration": 10.0,
+            "data": {"title": "GitHub", "url": "https://github.com/x/y"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_web)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-web-comet_testhost/events",
+        json=web_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 2
+    # Both events get the URL, even though only the second had a direct overlap.
+    assert all(e.url == "https://github.com/x/y" for e in window)
+
+
+@responses.activate
+def test_window_events_without_overlap_have_no_url():
+    """Window events that don't overlap any web event keep url=None."""
+    buckets_with_web = {
+        **BUCKETS,
+        "aw-watcher-web-comet_testhost": {"type": "web.tab.current"},
+    }
+    window_events = [
+        {
+            "id": 5,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 60.0,
+            "data": {"app": "Comet", "title": "Perplexity - Comet"},
+        },
+    ]
+    # Web event is 10 minutes later — no overlap.
+    web_events = [
+        {
+            "id": 10,
+            "timestamp": "2026-04-11T10:10:00.000000+00:00",
+            "duration": 30.0,
+            "data": {"title": "Other", "url": "https://other.example/"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_web)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-web-comet_testhost/events",
+        json=web_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 1
+    assert window[0].url is None

@@ -58,9 +58,10 @@ def sync_env(tmp_path, monkeypatch):
         def is_running(self):
             return True
 
-        def get_all_events(self, start, end):
+        def get_all_events(self, start, end, browser_apps=None):
             captured["aw_start"] = start
             captured["aw_end"] = end
+            captured["browser_apps"] = browser_apps
             evt = AWEvent(
                 timestamp=start + timedelta(seconds=1),
                 duration=300.0,

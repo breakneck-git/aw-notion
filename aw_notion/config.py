@@ -4,6 +4,20 @@ from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".config" / "aw-notion" / "config.toml"
 
+DEFAULT_BROWSER_APPS: tuple[str, ...] = (
+    "Google Chrome",
+    "Chromium",
+    "Firefox",
+    "Safari",
+    "Brave Browser",
+    "Opera",
+    "Microsoft Edge",
+    "Arc",
+    "Vivaldi",
+    "Comet",
+    "Chrome Canary",
+)
+
 
 @dataclass
 class NotionFieldsConfig:
@@ -29,6 +43,7 @@ class ActivityWatchConfig:
     afk_threshold_min: int = 10
     min_block_duration_sec: int = 120
     merge_gap_sec: int = 180
+    browser_apps: list[str] = field(default_factory=lambda: list(DEFAULT_BROWSER_APPS))
 
 
 @dataclass

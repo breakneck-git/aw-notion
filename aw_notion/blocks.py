@@ -99,6 +99,8 @@ def compute_focus_blocks(
         elif same and gap_sec <= merge_gap_sec:
             cur.end_utc = event_end
             cur.active_seconds += event.duration
+            if cur.url is None and event.url is not None:
+                cur.url = event.url
         else:
             if cur.active_seconds >= min_duration_sec:
                 blocks.append(cur)

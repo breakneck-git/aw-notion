@@ -34,6 +34,14 @@ afk_threshold_min = 10
 min_block_duration_sec = 120
 # Same-app/title gap shorter than this is merged into one block.
 merge_gap_sec = 180
+# Apps that get URLs attached from aw-watcher-web (window-watcher app names,
+# case-insensitive). The default covers common chromium-based browsers.
+# Extend if your browser is missing (e.g. "Sidekick", "Wavebox", "Orion").
+# browser_apps = [
+#     "Google Chrome", "Chromium", "Firefox", "Safari",
+#     "Brave Browser", "Opera", "Microsoft Edge",
+#     "Arc", "Vivaldi", "Comet", "Chrome Canary",
+# ]
 
 [sync]
 # How many days to backfill on the very first run (no state.json yet).

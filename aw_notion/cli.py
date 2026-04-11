@@ -76,7 +76,9 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
         start = state.last_sync - timedelta(minutes=30)
         log.info("Incremental sync from %s", start.isoformat())
 
-    window_events, afk_events = aw.get_all_events(start, now)
+    window_events, afk_events = aw.get_all_events(
+        start, now, browser_apps=cfg.activitywatch.browser_apps
+    )
     blocks = compute_focus_blocks(
         window_events,
         afk_events,

@@ -151,3 +151,135 @@ def test_sync_returns_cleanly_when_lock_held(tmp_path, monkeypatch, caplog):
         os.close(fd)
 
     assert "another sync in progress" in caplog.text.lower()
+
+
+def test_sync_runs_git_fallback_for_path_like_titles(tmp_path, monkeypatch):
+    """
+    Blocks whose title starts with ~/ or / and whose note is still None
+    should get their note filled from find_git_branch.
+    """
+    fake_cfg = Config(
+        notion=NotionConfig(token="t", timelog_db="db"),
+        activitywatch=ActivityWatchConfig(),
+        sync=SyncConfig(),
+        timezone="UTC",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda: fake_cfg)
+    monkeypatch.setattr(cli, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(cli, "LOCK_PATH", tmp_path / "sync.lock")
+
+    blocks: list = []
+    git_calls: list[str] = []
+
+    class FakeAW:
+        def __init__(self, *a, **k):
+            pass
+
+        def is_running(self):
+            return True
+
+        def get_all_events(self, start, end, browser_apps=None):
+            return (
+                [
+                    AWEvent(
+                        timestamp=start + timedelta(seconds=1),
+                        duration=300.0,
+                        app="Ghostty",
+                        title="~/code/aw-notion",
+                    ),
+                    AWEvent(
+                        timestamp=start + timedelta(seconds=1),
+                        duration=300.0,
+                        app="Chrome",
+                        title="GitHub — Chrome",
+                    ),
+                ],
+                [],
+            )
+
+    class FakeNotion:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_entry(self, block, tz):
+            blocks.append(block)
+            return f"page-{len(blocks)}"
+
+    def fake_find_git_branch(path, block_end):
+        git_calls.append(path)
+        return "aw-notion @ main"
+
+    monkeypatch.setattr(cli, "ActivityWatchClient", FakeAW)
+    monkeypatch.setattr(cli, "NotionTimeLogClient", FakeNotion)
+    monkeypatch.setattr(cli, "find_git_branch", fake_find_git_branch)
+
+    sync()
+
+    assert len(blocks) == 2
+    path_block = next(b for b in blocks if b.title == "~/code/aw-notion")
+    non_path_block = next(b for b in blocks if b.title == "GitHub — Chrome")
+    assert path_block.note == "aw-notion @ main"
+    assert non_path_block.note is None
+    assert git_calls == ["~/code/aw-notion"]
+
+
+def test_sync_git_fallback_does_not_override_existing_note(tmp_path, monkeypatch):
+    """
+    If ax-watcher already set a note on the block, the git fallback must
+    not overwrite it (git reflog is a fallback, not a primary source).
+    """
+    fake_cfg = Config(
+        notion=NotionConfig(token="t", timelog_db="db"),
+        activitywatch=ActivityWatchConfig(),
+        sync=SyncConfig(),
+        timezone="UTC",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda: fake_cfg)
+    monkeypatch.setattr(cli, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(cli, "LOCK_PATH", tmp_path / "sync.lock")
+
+    blocks: list = []
+    git_called = False
+
+    class FakeAW:
+        def __init__(self, *a, **k):
+            pass
+
+        def is_running(self):
+            return True
+
+        def get_all_events(self, start, end, browser_apps=None):
+            return (
+                [
+                    AWEvent(
+                        timestamp=start + timedelta(seconds=1),
+                        duration=300.0,
+                        app="Ghostty",
+                        title="~/code/aw-notion",
+                        note="already set by ax",
+                    )
+                ],
+                [],
+            )
+
+    class FakeNotion:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_entry(self, block, tz):
+            blocks.append(block)
+            return "page-xyz"
+
+    def fake_find_git_branch(path, block_end):
+        nonlocal git_called
+        git_called = True
+        return "should-not-be-used"
+
+    monkeypatch.setattr(cli, "ActivityWatchClient", FakeAW)
+    monkeypatch.setattr(cli, "NotionTimeLogClient", FakeNotion)
+    monkeypatch.setattr(cli, "find_git_branch", fake_find_git_branch)
+
+    sync()
+
+    assert git_called is False
+    assert blocks[0].note == "already set by ax"

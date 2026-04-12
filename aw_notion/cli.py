@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from .activitywatch import ActivityWatchClient
 from .blocks import compute_focus_blocks
 from .config import load_config
+from .git_context import find_git_branch
 from .notion import NotionTimeLogClient
 from .state import STATE_PATH, State
 
@@ -55,6 +56,10 @@ def _parse_since(since: str) -> datetime:
     return dt.astimezone(UTC)
 
 
+def _looks_like_path(title: str) -> bool:
+    return bool(title) and (title.startswith("~/") or title.startswith("/"))
+
+
 def _run_sync(dry_run: bool, since: str | None) -> None:
     cfg = load_config()
     state = State.load(STATE_PATH)
@@ -87,6 +92,10 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
         min_duration_sec=cfg.activitywatch.min_block_duration_sec,
     )
     log.info("Found %d focus blocks in range", len(blocks))
+
+    for block in blocks:
+        if block.note is None and _looks_like_path(block.title):
+            block.note = find_git_branch(block.title, block.end_utc)
 
     notion = (
         NotionTimeLogClient(cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields)

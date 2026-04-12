@@ -28,6 +28,7 @@ class NotionFieldsConfig:
     app: str = "App"
     url: str = "URL"
     sorted: str = "Sorted"
+    note: str | None = None
 
 
 @dataclass

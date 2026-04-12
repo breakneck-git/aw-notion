@@ -9,8 +9,22 @@ def dt(offset_sec: float) -> datetime:
     return base + timedelta(seconds=offset_sec)
 
 
-def win(offset_sec: float, duration: float, app: str, title: str, url=None) -> AWEvent:
-    return AWEvent(timestamp=dt(offset_sec), duration=duration, app=app, title=title, url=url)
+def win(
+    offset_sec: float,
+    duration: float,
+    app: str,
+    title: str,
+    url=None,
+    note=None,
+) -> AWEvent:
+    return AWEvent(
+        timestamp=dt(offset_sec),
+        duration=duration,
+        app=app,
+        title=title,
+        url=url,
+        note=note,
+    )
 
 
 def afk(offset_sec: float, duration: float) -> AFKEvent:
@@ -120,3 +134,30 @@ def test_block_active_minutes_rounds():
     events = [win(0, 190, "Code", "file.py")]  # 190s = 3.16 min → rounds to 3
     blocks = compute_focus_blocks(events, [])
     assert blocks[0].active_minutes() == 3
+
+
+def test_note_preserved_in_block():
+    events = [win(0, 200, "Claude", "Claude", note="Conversation about cats")]
+    blocks = compute_focus_blocks(events, [])
+    assert len(blocks) == 1
+    assert blocks[0].note == "Conversation about cats"
+
+
+def test_note_backfilled_from_later_merged_event():
+    events = [
+        win(0, 100, "Claude", "Claude", note=None),
+        win(150, 100, "Claude", "Claude", note="Conversation about cats"),
+    ]
+    blocks = compute_focus_blocks(events, [])
+    assert len(blocks) == 1
+    assert blocks[0].note == "Conversation about cats"
+
+
+def test_note_not_in_signature():
+    """Signature must be stable regardless of note — idempotency key is
+    (app, title, start_utc) only."""
+    e1 = [win(0, 200, "Claude", "Claude", note="First context")]
+    e2 = [win(0, 200, "Claude", "Claude", note="Second context")]
+    assert (
+        compute_focus_blocks(e1, [])[0].signature() == compute_focus_blocks(e2, [])[0].signature()
+    )

@@ -35,6 +35,29 @@ def _find_url_by_overlap(
     return None
 
 
+def _find_note_by_overlap(
+    ax_intervals: list[tuple[datetime, datetime, str, str]],
+    win_start: datetime,
+    win_end: datetime,
+    app: str,
+) -> str | None:
+    """
+    Return the context string of the first ax-watcher event whose interval
+    overlaps [win_start, win_end] AND whose `app` field matches the window
+    event's app. The app filter prevents an ax event emitted for Claude from
+    leaking onto a window event for Telegram when their timestamps overlap.
+
+    ax_intervals must be sorted by start timestamp.
+    """
+    for s, e, ax_app, ctx in ax_intervals:
+        if s >= win_end:
+            break
+        effective_e = e if e > s else s + _ZERO_DURATION_EPSILON
+        if effective_e > win_start and ax_app == app:
+            return ctx
+    return None
+
+
 class ActivityWatchClient:
     def __init__(self, base_url: str = "http://localhost:5600"):
         self.base_url = base_url.rstrip("/")
@@ -108,6 +131,20 @@ class ActivityWatchClient:
                 web_intervals.append((ts, we, url))
         web_intervals.sort(key=lambda x: x[0])
 
+        ax_intervals: list[tuple[datetime, datetime, str, str]] = []
+        for bucket_id in buckets:
+            if not bucket_id.startswith("aw-watcher-ax"):
+                continue
+            for e in self._fetch_events(bucket_id, start, end):
+                ctx = e["data"].get("context")
+                ax_app = e["data"].get("app")
+                if not ctx or not ax_app:
+                    continue
+                ts = datetime.fromisoformat(e["timestamp"]).astimezone(UTC)
+                ae = ts + timedelta(seconds=float(e["duration"]))
+                ax_intervals.append((ts, ae, ax_app, ctx))
+        ax_intervals.sort(key=lambda x: x[0])
+
         window_events: list[AWEvent] = []
         for bucket_id in buckets:
             if not bucket_id.startswith("aw-watcher-window"):
@@ -120,6 +157,7 @@ class ActivityWatchClient:
                 url = None
                 if app.casefold() in browser_set:
                     url = _find_url_by_overlap(web_intervals, ts, win_end)
+                note = _find_note_by_overlap(ax_intervals, ts, win_end, app)
                 window_events.append(
                     AWEvent(
                         timestamp=ts,
@@ -127,6 +165,7 @@ class ActivityWatchClient:
                         app=app,
                         title=e["data"].get("title", ""),
                         url=url,
+                        note=note,
                     )
                 )
 

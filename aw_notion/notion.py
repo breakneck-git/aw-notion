@@ -31,6 +31,8 @@ class NotionTimeLogClient:
         }
         if block.url:
             properties[f.url] = {"url": block.url}
+        if f.note and block.note:
+            properties[f.note] = {"rich_text": [{"text": {"content": block.note[:2000]}}]}
 
         response = self.client.pages.create(
             parent={"database_id": self.db_id},

@@ -29,6 +29,7 @@ Create a database in Notion with these properties (the names are the **defaults*
 | `App` | Select | Application name |
 | `URL` | URL | Optional, set for browser blocks |
 | `Sorted` | Checkbox | Always written as `false` (manual workflow flag) |
+| `Note` | Text | **Opt-in.** Context from aw-watcher-ax (Claude/Telegram chat titles) or git branch for terminal blocks. See [Note enrichment](#note-enrichment) below. |
 
 Then share the database with your integration: in Notion go to **Connections → Add connections** on the database page.
 
@@ -95,6 +96,19 @@ entry = "Запись"
 ```
 
 Other tunables under `[activitywatch]`: `afk_threshold_min`, `merge_gap_sec`, `min_block_duration_sec`. Under `[sync]`: `initial_sync_days`.
+
+## Note enrichment
+
+The `Note` column captures context that isn't already in the window title. It's **opt-in** — leave `note` unset in `[notion.fields]` and the property is never written.
+
+To enable: add a rich text column named `Note` (or any name) to your database, then set `note = "Note"` in `[notion.fields]`.
+
+Two sources feed it:
+
+1. **aw-watcher-ax** (macOS only) — a separate watcher that reads conversation/chat titles from Claude Desktop and Telegram via the Accessibility API and writes them to a `aw-watcher-ax_<host>` bucket. aw-notion reads from that bucket via timestamp overlap and attaches the context to matching focus blocks. See [aw-watcher-ax](https://github.com/breakneck-git/aw-watcher-ax) for install + config.
+2. **Git reflog fallback** — for terminal blocks whose title looks like a path (e.g. `~/code/aw-notion`), aw-notion walks `.git/logs/HEAD` and derives `"aw-notion @ main"` from the branch active at the block's end time. Zero-install, works offline, no external watcher needed.
+
+Sources are tried in order: ax-watcher first, git reflog as fallback. Blocks without a source (Slack, Discord, etc.) leave `Note` empty.
 
 ## How it works
 

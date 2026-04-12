@@ -389,3 +389,126 @@ def test_window_events_without_overlap_have_no_url():
     window, _ = client.get_all_events(start, end)
     assert len(window) == 1
     assert window[0].url is None
+
+
+@responses.activate
+def test_ax_bucket_enriches_window_events_with_note():
+    """
+    aw-watcher-ax heartbeat events set `note` on overlapping window events
+    whose app matches. Same timestamp-overlap pattern as web enrichment.
+    """
+    buckets_with_ax = {
+        **BUCKETS,
+        "aw-watcher-ax_testhost": {"type": "currentwindow"},
+    }
+    window_events = [
+        {
+            "id": 1,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 300.0,
+            "data": {"app": "Claude", "title": "Claude"},
+        },
+    ]
+    ax_events = [
+        {
+            "id": 20,
+            "timestamp": "2026-04-11T10:01:00.000000+00:00",
+            "duration": 120.0,
+            "data": {"app": "Claude", "context": "Conversation about cats"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_ax)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-ax_testhost/events",
+        json=ax_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 1
+    assert window[0].note == "Conversation about cats"
+
+
+@responses.activate
+def test_ax_bucket_missing_is_fine():
+    """No ax-watcher bucket present → window events have note=None, no error."""
+    responses.add(responses.GET, f"{BASE}/buckets", json=BUCKETS)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=WINDOW_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 2
+    assert all(e.note is None for e in window)
+
+
+@responses.activate
+def test_ax_note_respects_app_filter():
+    """
+    ax events are filtered by app name to prevent a Claude context string
+    from leaking onto a temporally overlapping Telegram window event.
+    """
+    buckets_with_ax = {
+        **BUCKETS,
+        "aw-watcher-ax_testhost": {"type": "currentwindow"},
+    }
+    window_events = [
+        {
+            "id": 1,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 300.0,
+            "data": {"app": "Telegram", "title": "Telegram"},
+        },
+    ]
+    # ax event is for Claude but temporally overlaps the Telegram window event.
+    ax_events = [
+        {
+            "id": 20,
+            "timestamp": "2026-04-11T10:01:00.000000+00:00",
+            "duration": 120.0,
+            "data": {"app": "Claude", "context": "Conversation about cats"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_ax)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-ax_testhost/events",
+        json=ax_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 1
+    assert window[0].note is None

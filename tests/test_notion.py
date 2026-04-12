@@ -13,7 +13,7 @@ TOKEN = "secret_test"
 TZ = ZoneInfo("Europe/Moscow")
 
 
-def make_block(url=None) -> FocusBlock:
+def make_block(url=None, note=None) -> FocusBlock:
     return FocusBlock(
         app="Code",
         title="activitywatch.py — aw_notion — VS Code",
@@ -21,6 +21,7 @@ def make_block(url=None) -> FocusBlock:
         end_utc=datetime(2026, 4, 11, 7, 23, 10, tzinfo=UTC),
         active_seconds=1390.0,
         url=url,
+        note=note,
     )
 
 
@@ -60,7 +61,9 @@ def test_create_entry_payload_includes_required_fields(httpx_mock):
     assert "End" in props
 
 
-def test_create_entry_omits_note_property(httpx_mock):
+def test_create_entry_omits_note_when_field_not_configured(httpx_mock):
+    """Default NotionFieldsConfig has note=None → Note property never written,
+    even if the block carries a note value."""
     captured = {}
 
     def capture_callback(request):
@@ -73,9 +76,68 @@ def test_create_entry_omits_note_property(httpx_mock):
         url="https://api.notion.com/v1/pages",
     )
     client = NotionTimeLogClient(TOKEN, DB_ID)
-    client.create_entry(make_block(), TZ)
+    client.create_entry(make_block(note="Conversation about cats"), TZ)
 
     assert "Note" not in captured["body"]["properties"]
+
+
+def test_create_entry_writes_note_when_configured(httpx_mock):
+    captured = {}
+
+    def capture_callback(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(json={"id": "page-xyz"}, status_code=200)
+
+    httpx_mock.add_callback(
+        callback=capture_callback,
+        method="POST",
+        url="https://api.notion.com/v1/pages",
+    )
+    fields = NotionFieldsConfig(note="Note")
+    client = NotionTimeLogClient(TOKEN, DB_ID, fields=fields)
+    client.create_entry(make_block(note="Conversation about cats"), TZ)
+
+    props = captured["body"]["properties"]
+    assert props["Note"]["rich_text"][0]["text"]["content"] == "Conversation about cats"
+
+
+def test_create_entry_omits_note_when_block_note_is_none(httpx_mock):
+    """Note configured but block.note is None → Note property omitted."""
+    captured = {}
+
+    def capture_callback(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(json={"id": "page-xyz"}, status_code=200)
+
+    httpx_mock.add_callback(
+        callback=capture_callback,
+        method="POST",
+        url="https://api.notion.com/v1/pages",
+    )
+    fields = NotionFieldsConfig(note="Note")
+    client = NotionTimeLogClient(TOKEN, DB_ID, fields=fields)
+    client.create_entry(make_block(note=None), TZ)
+
+    assert "Note" not in captured["body"]["properties"]
+
+
+def test_create_entry_truncates_long_note(httpx_mock):
+    captured = {}
+
+    def capture_callback(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(json={"id": "page-xyz"}, status_code=200)
+
+    httpx_mock.add_callback(
+        callback=capture_callback,
+        method="POST",
+        url="https://api.notion.com/v1/pages",
+    )
+    fields = NotionFieldsConfig(note="Note")
+    client = NotionTimeLogClient(TOKEN, DB_ID, fields=fields)
+    client.create_entry(make_block(note="x" * 3000), TZ)
+
+    assert len(captured["body"]["properties"]["Note"]["rich_text"][0]["text"]["content"]) == 2000
 
 
 def test_create_entry_sets_url_property_when_present(httpx_mock):

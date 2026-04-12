@@ -56,7 +56,9 @@ ActivityWatch REST  ->  compute_focus_blocks  ->  NotionTimeLogClient
 
 **Key data flows and invariants that span files:**
 
-1. **Web watcher enriches window watcher with URLs; it does NOT replace it.** In `ActivityWatchClient.get_all_events` (`activitywatch.py`), window-watcher is the sole source of truth for `app`, `title`, and `duration`. Web-watcher events are read first into a sorted list of `(start, end, url)` intervals; then, for each window event, `_find_url_by_overlap` looks up the URL of any web event whose interval temporally overlaps `[window.start, window.end]`. The assumption is that web-watcher only emits events while a browser tab is visible, so non-browser window events will not temporally overlap a web event. This design intentionally has **no hard-coded browser-app-name map** — it works for any chromium-based browser (Comet, Arc, Brave, Vivaldi, Chrome Canary, …) without configuration. Zero-duration web events (emitted on navigation) are treated as having a tiny epsilon span so they still match.
+1. **Web watcher enriches window watcher with URLs; it does NOT replace it.** In `ActivityWatchClient.get_all_events` (`activitywatch.py`), window-watcher is the sole source of truth for `app`, `title`, and `duration`. Web-watcher events are read first into a sorted list of `(start, end, url)` intervals; then, for each window event, `_find_url_by_overlap` looks up the URL of any web event whose interval temporally overlaps `[window.start, window.end]`. **App-name filtering is load-bearing**: only window events whose app is in `browser_apps` get URL lookups — otherwise web-watcher's background tab heartbeats (which keep firing even when the browser is not in the foreground) would leak onto unrelated terminal/editor window events. This design intentionally has **no hard-coded browser-app-name map** — it works for any chromium-based browser (Comet, Arc, Brave, Vivaldi, Chrome Canary, …) via the configurable `browser_apps` list. Zero-duration web events (emitted on navigation) are treated as having a tiny epsilon span so they still match.
+
+   **Note enrichment follows the exact same pattern.** Events from `aw-watcher-ax_*` buckets (produced by the separate [aw-watcher-ax](https://github.com/breakneck-git/aw-watcher-ax) macOS package) are read into a sorted list of `(start, end, app, context)` intervals. For each window event, `_find_note_by_overlap` looks up the context of any ax event whose interval temporally overlaps AND whose `app` field matches the window event's app. The app filter here serves the same leak-prevention role that `browser_apps` does for URLs. aw-notion has **zero knowledge** of ax-watcher beyond the bucket name prefix — they communicate only via the AW bucket namespace.
 
 2. **AFK is filtered two ways in `compute_focus_blocks` (`blocks.py`).** First, any window event whose timestamp falls inside an `afk` interval is dropped entirely (soft filter). Second, when iterating sorted active events, a gap greater than `afk_threshold_sec` between the current block and the next event forces a hard block boundary. Both must stay consistent, and `afk_threshold_sec` is derived from config's `afk_threshold_min * 60` in `cli.py`.
 
@@ -71,6 +73,8 @@ ActivityWatch REST  ->  compute_focus_blocks  ->  NotionTimeLogClient
 7. **Concurrency safety.** `cli.sync` acquires `~/.config/aw-notion/sync.lock` via `fcntl.flock(LOCK_EX | LOCK_NB)` before any Notion writes. A manual `aw-notion sync` running while the scheduled agent fires will exit cleanly with "another sync in progress, skipping" instead of duplicating Notion entries.
 
 8. **Atomic state writes.** `State.save` writes to `state.json.tmp` then `os.replace`s. A SIGKILL mid-write cannot leave a half-written `state.json`.
+
+9. **Note enrichment is feature-gated and fallback-layered.** `NotionFieldsConfig.note` defaults to `None`; when `None`, `NotionTimeLogClient.create_entry` never writes the Note property regardless of what's on the block. Sources are applied in priority order: (a) `AWEvent.note` is set from ax-watcher bucket in `activitywatch.py`, propagated to `FocusBlock.note` on the first merged event (same pattern as URL backfill), and (b) `cli._run_sync` runs a git reflog fallback (`git_context.find_git_branch`) for any block whose `note is None` AND whose title starts with `~/` or `/`. The fallback is **never** applied on top of an ax-sourced note. `FocusBlock.signature()` does **not** include `note` — it's enrichment, not identity; including it would break idempotency dedup when the note changes retroactively.
 
 ## Config and state
 
@@ -91,6 +95,7 @@ ActivityWatch REST  ->  compute_focus_blocks  ->  NotionTimeLogClient
 | `App` | Select | Application name |
 | `URL` | URL | Optional, set only when block has a URL (browser blocks) |
 | `Sorted` | Checkbox | Always written as `false` |
+| `Note` | Rich text | **Opt-in.** Only written when `notion.fields.note` is set. Source: ax-watcher context or git reflog fallback. Truncated to 2000 chars. |
 
 For non-English Notion databases, override field names in `[notion.fields]` — e.g. `duration_minutes = "Время"`. See `config.toml.example`.
 
@@ -99,4 +104,5 @@ For non-English Notion databases, override field names in `[notion.fields]` — 
 - HTTP is mocked with `responses` (ActivityWatch) — see `tests/test_activitywatch.py`. No test hits a live ActivityWatch instance.
 - `tests/test_blocks.py` uses the `dt(offset_sec)` / `win(...)` / `afk(...)` helpers for readable scenarios — reuse them when adding cases rather than hand-constructing datetimes.
 - There is no network-backed Notion test; `tests/test_notion.py` mocks the Notion client via `pytest-httpx`. Do not introduce a live Notion test without a dedicated sandbox database.
-- `tests/test_cli.py` exercises the lock + dry-run + since logic with monkeypatched `LOCK_PATH` and a fake AW/Notion fixture.
+- `tests/test_cli.py` exercises the lock + dry-run + since logic with monkeypatched `LOCK_PATH` and a fake AW/Notion fixture. The git-reflog fallback path is tested by monkeypatching `find_git_branch` — tests don't create real `.git` dirs.
+- `tests/test_git_context.py` creates real `.git/logs/HEAD` files under `tmp_path` and asserts reflog parsing against synthetic entries (checkout, rebase finish, commit-only, detached HEAD). Extend this file when touching `git_context.py` instead of inventing a new harness.

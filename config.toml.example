@@ -17,6 +17,10 @@ timelog_db = "YOUR_NOTION_DATABASE_ID"
 
 # Optional: override Notion property names if your DB uses different labels
 # (e.g. localized to your language). Defaults match the README schema table.
+#
+# `note` is opt-in — leave it commented out (or set to an empty string) to
+# skip the Note property entirely. Set it to the name of a rich_text column
+# on your DB to enable note enrichment from aw-watcher-ax and git reflog.
 # [notion.fields]
 # entry            = "Entry"
 # start            = "Start"
@@ -25,6 +29,7 @@ timelog_db = "YOUR_NOTION_DATABASE_ID"
 # app              = "App"
 # url              = "URL"
 # sorted           = "Sorted"
+# note             = "Note"
 
 [activitywatch]
 base_url = "http://localhost:5600"

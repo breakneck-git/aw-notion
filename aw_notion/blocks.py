@@ -11,6 +11,7 @@ class AWEvent:
     app: str
     title: str
     url: str | None = None
+    note: str | None = None
 
 
 @dataclass
@@ -28,6 +29,7 @@ class FocusBlock:
     end_utc: datetime
     active_seconds: float
     url: str | None = None
+    note: str | None = None
 
     def start_local(self, tz: ZoneInfo) -> datetime:
         return self.start_utc.astimezone(tz)
@@ -78,6 +80,7 @@ def compute_focus_blocks(
         end_utc=first.timestamp + timedelta(seconds=first.duration),
         active_seconds=first.duration,
         url=first.url,
+        note=first.note,
     )
 
     for event in active[1:]:
@@ -95,12 +98,15 @@ def compute_focus_blocks(
                 end_utc=event_end,
                 active_seconds=event.duration,
                 url=event.url,
+                note=event.note,
             )
         elif same and gap_sec <= merge_gap_sec:
             cur.end_utc = event_end
             cur.active_seconds += event.duration
             if cur.url is None and event.url is not None:
                 cur.url = event.url
+            if cur.note is None and event.note is not None:
+                cur.note = event.note
         else:
             if cur.active_seconds >= min_duration_sec:
                 blocks.append(cur)
@@ -111,6 +117,7 @@ def compute_focus_blocks(
                 end_utc=event_end,
                 active_seconds=event.duration,
                 url=event.url,
+                note=event.note,
             )
 
     if cur.active_seconds >= min_duration_sec:

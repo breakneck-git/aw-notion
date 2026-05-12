@@ -50,6 +50,13 @@ class ActivityWatchConfig:
 @dataclass
 class SyncConfig:
     initial_sync_days: int = 7
+    # Block-level exclusion rules. Matched case-insensitively. Excluded blocks
+    # never reach Notion AND never get a signature recorded in state — if you
+    # later remove the entry from exclusion config, only NEW events of that
+    # kind start syncing (already-excluded past events stay excluded unless
+    # you force `--since`).
+    exclude_apps: list[str] = field(default_factory=list)
+    exclude_url_substrings: list[str] = field(default_factory=list)
 
 
 @dataclass

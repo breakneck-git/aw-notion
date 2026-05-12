@@ -51,3 +51,10 @@ merge_gap_sec = 180
 [sync]
 # How many days to backfill on the very first run (no state.json yet).
 initial_sync_days = 7
+
+# Skip blocks matching these criteria — they never reach Notion. Matching is
+# case-insensitive. Useful for privacy (banking apps, sensitive sites) or
+# noise reduction (loginwindow, lock screens). Removing an entry later only
+# starts syncing NEW events of that kind; past events stay excluded.
+# exclude_apps = ["loginwindow", "Telegram"]
+# exclude_url_substrings = ["pornhub", "bank.example.com"]

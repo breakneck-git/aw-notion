@@ -30,7 +30,10 @@ class NotionTimeLogClient:
             f.sorted: {"checkbox": False},
         }
         if block.url:
-            properties[f.url] = {"url": block.url}
+            # Notion URL property is capped at 2000 chars; OAuth/redirect URLs
+            # frequently exceed this (state + nested redirect tokens). Truncate
+            # rather than fail the whole batch.
+            properties[f.url] = {"url": block.url[:2000]}
         if f.note and block.note:
             properties[f.note] = {"rich_text": [{"text": {"content": block.note[:2000]}}]}
 

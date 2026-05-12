@@ -158,6 +158,28 @@ def test_create_entry_sets_url_property_when_present(httpx_mock):
     assert captured["body"]["properties"]["URL"]["url"] == "https://github.com/x/y"
 
 
+def test_create_entry_truncates_url_at_2000_chars(httpx_mock):
+    """Notion's URL property has a 2000-char limit. OAuth redirects with
+    nested state tokens frequently exceed this; we truncate rather than
+    fail the whole batch."""
+    captured = {}
+
+    def capture_callback(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(json={"id": "page-xyz"}, status_code=200)
+
+    httpx_mock.add_callback(
+        callback=capture_callback,
+        method="POST",
+        url="https://api.notion.com/v1/pages",
+    )
+    long_url = "https://oauth.example/callback?state=" + "x" * 3000
+    client = NotionTimeLogClient(TOKEN, DB_ID)
+    client.create_entry(make_block(url=long_url), TZ)
+
+    assert len(captured["body"]["properties"]["URL"]["url"]) == 2000
+
+
 def test_create_entry_omits_url_property_when_absent(httpx_mock):
     captured = {}
 

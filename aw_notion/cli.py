@@ -41,12 +41,50 @@ def _acquire_lock(path: Path):
         os.close(fd)
 
 
-def sync(dry_run: bool = False, since: str | None = None) -> None:
+def sync(dry_run: bool = False, since: str | None = None, debug: bool = False) -> None:
     try:
         with _acquire_lock(LOCK_PATH):
-            _run_sync(dry_run=dry_run, since=since)
+            _run_sync(dry_run=dry_run, since=since, debug=debug)
     except BlockingIOError:
         log.info("another sync in progress, skipping")
+
+
+def _log_blocks_debug(blocks, ax_intervals, state_sigs) -> None:
+    log.info("=== DEBUG: %d focus blocks ===", len(blocks))
+    for b in blocks:
+        sig = b.signature()
+        marker = "SKIP" if sig in state_sigs else "NEW "
+        log.info(
+            "[%s] %s %s->%s dur=%ds note=%r title=%r sig=%s",
+            marker,
+            b.app,
+            b.start_utc.strftime("%m-%d %H:%M:%S"),
+            b.end_utc.strftime("%H:%M:%S"),
+            int(b.active_seconds),
+            b.note,
+            b.title,
+            sig[:8],
+        )
+        if b.app == "Claude":
+            overlapping = [
+                (s, e, ap, ctx)
+                for s, e, ap, ctx in ax_intervals
+                if e >= b.start_utc and s <= b.end_utc
+            ]
+            if overlapping:
+                log.info("       ax overlap candidates:")
+                for s, e, ap, ctx in overlapping:
+                    app_match = "app_match" if ap == b.app else f"app={ap!r}"
+                    log.info(
+                        "         %s->%s %s ctx=%r",
+                        s.strftime("%H:%M:%S"),
+                        e.strftime("%H:%M:%S"),
+                        app_match,
+                        ctx,
+                    )
+            else:
+                log.info("       no ax events overlap this block's time range")
+    log.info("=== END DEBUG ===")
 
 
 def _parse_since(since: str) -> datetime:
@@ -60,7 +98,35 @@ def _looks_like_path(title: str) -> bool:
     return bool(title) and (title.startswith("~/") or title.startswith("/"))
 
 
-def _run_sync(dry_run: bool, since: str | None) -> None:
+def _filter_excluded(blocks, sync_cfg):
+    """Drop blocks matching user-configured exclusion rules.
+
+    Returns (kept_blocks, excluded_count). Matching is case-insensitive:
+    - `exclude_apps`: exact match against block.app
+    - `exclude_url_substrings`: substring match against block.url
+    """
+    if not sync_cfg.exclude_apps and not sync_cfg.exclude_url_substrings:
+        return list(blocks), 0
+
+    excluded_apps = {a.lower() for a in sync_cfg.exclude_apps}
+    excluded_url_subs = [s.lower() for s in sync_cfg.exclude_url_substrings]
+
+    kept = []
+    excluded = 0
+    for b in blocks:
+        if b.app and b.app.lower() in excluded_apps:
+            excluded += 1
+            continue
+        if b.url and excluded_url_subs:
+            u = b.url.lower()
+            if any(s in u for s in excluded_url_subs):
+                excluded += 1
+                continue
+        kept.append(b)
+    return kept, excluded
+
+
+def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
     cfg = load_config()
     state = State.load(STATE_PATH)
 
@@ -93,9 +159,22 @@ def _run_sync(dry_run: bool, since: str | None) -> None:
     )
     log.info("Found %d focus blocks in range", len(blocks))
 
+    blocks, excluded_count = _filter_excluded(blocks, cfg.sync)
+    if excluded_count:
+        log.info(
+            "Excluded %d block(s) per config (apps=%s, url_substrings=%s)",
+            excluded_count,
+            cfg.sync.exclude_apps,
+            cfg.sync.exclude_url_substrings,
+        )
+
     for block in blocks:
         if block.note is None and _looks_like_path(block.title):
             block.note = find_git_branch(block.title, block.end_utc)
+
+    if debug:
+        ax_intervals = aw.fetch_ax_intervals(start, now)
+        _log_blocks_debug(blocks, ax_intervals, state.notion_entries)
 
     notion = (
         NotionTimeLogClient(cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields)
@@ -155,6 +234,11 @@ def main() -> None:
         metavar="ISO8601",
         help="override start time (overrides incremental/initial-sync logic)",
     )
+    sync_p.add_argument(
+        "--debug",
+        action="store_true",
+        help="dump each computed focus block with overlap diagnostics for Claude",
+    )
     args = parser.parse_args()
     if args.cmd == "sync":
-        sync(dry_run=args.dry_run, since=args.since)
+        sync(dry_run=args.dry_run, since=args.since, debug=args.debug)

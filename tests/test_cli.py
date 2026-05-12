@@ -108,7 +108,7 @@ def test_sync_since_overrides_start(sync_env):
 def test_main_parses_dry_run(monkeypatch):
     captured = {}
 
-    def fake_sync(dry_run=False, since=None):
+    def fake_sync(dry_run=False, since=None, debug=False):
         captured["dry_run"] = dry_run
         captured["since"] = since
 
@@ -121,7 +121,7 @@ def test_main_parses_dry_run(monkeypatch):
 def test_main_parses_since(monkeypatch):
     captured = {}
 
-    def fake_sync(dry_run=False, since=None):
+    def fake_sync(dry_run=False, since=None, debug=False):
         captured["since"] = since
 
     monkeypatch.setattr(cli, "sync", fake_sync)
@@ -283,3 +283,90 @@ def test_sync_git_fallback_does_not_override_existing_note(tmp_path, monkeypatch
 
     assert git_called is False
     assert blocks[0].note == "already set by ax"
+
+
+# ---------------------------------------------------------------------------
+# Exclusion filter (cli._filter_excluded)
+# ---------------------------------------------------------------------------
+from datetime import UTC, datetime, timedelta
+from aw_notion.blocks import FocusBlock
+from aw_notion.cli import _filter_excluded
+
+
+def _b(app: str, url: str | None = None) -> FocusBlock:
+    base = datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
+    return FocusBlock(
+        app=app,
+        title="x",
+        start_utc=base,
+        end_utc=base + timedelta(seconds=300),
+        active_seconds=300,
+        url=url,
+    )
+
+
+def test_filter_excluded_no_rules_returns_all():
+    blocks = [_b("Code"), _b("Chrome", url="https://example.com")]
+    kept, n = _filter_excluded(blocks, SyncConfig())
+    assert n == 0
+    assert kept == blocks
+
+
+def test_filter_excluded_by_app_exact_match():
+    blocks = [_b("Telegram"), _b("Code"), _b("loginwindow")]
+    cfg = SyncConfig(exclude_apps=["Telegram", "loginwindow"])
+    kept, n = _filter_excluded(blocks, cfg)
+    assert n == 2
+    assert [b.app for b in kept] == ["Code"]
+
+
+def test_filter_excluded_app_match_is_case_insensitive():
+    blocks = [_b("TELEGRAM"), _b("telegram"), _b("Code")]
+    cfg = SyncConfig(exclude_apps=["Telegram"])
+    kept, n = _filter_excluded(blocks, cfg)
+    assert n == 2
+    assert [b.app for b in kept] == ["Code"]
+
+
+def test_filter_excluded_by_url_substring():
+    blocks = [
+        _b("Chrome", url="https://www.pornhub.com/view_video.php?id=abc"),
+        _b("Chrome", url="https://github.com/x/y"),
+        _b("Chrome", url="https://m.pornhub.com/other"),
+    ]
+    cfg = SyncConfig(exclude_url_substrings=["pornhub"])
+    kept, n = _filter_excluded(blocks, cfg)
+    assert n == 2
+    assert kept[0].url == "https://github.com/x/y"
+
+
+def test_filter_excluded_url_match_is_case_insensitive():
+    blocks = [_b("Chrome", url="https://PornHub.com/x")]
+    cfg = SyncConfig(exclude_url_substrings=["pornhub"])
+    kept, n = _filter_excluded(blocks, cfg)
+    assert n == 1
+    assert kept == []
+
+
+def test_filter_excluded_combined_app_and_url():
+    blocks = [
+        _b("Telegram"),
+        _b("Chrome", url="https://pornhub.com/x"),
+        _b("Code"),
+    ]
+    cfg = SyncConfig(
+        exclude_apps=["Telegram"],
+        exclude_url_substrings=["pornhub"],
+    )
+    kept, n = _filter_excluded(blocks, cfg)
+    assert n == 2
+    assert [b.app for b in kept] == ["Code"]
+
+
+def test_filter_excluded_url_check_skipped_when_no_url():
+    """Block with url=None must not crash the substring check."""
+    blocks = [_b("Code", url=None)]
+    cfg = SyncConfig(exclude_url_substrings=["anything"])
+    kept, n = _filter_excluded(blocks, cfg)
+    assert n == 0
+    assert kept == blocks

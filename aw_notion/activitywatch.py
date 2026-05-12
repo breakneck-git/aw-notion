@@ -75,6 +75,25 @@ class ActivityWatchClient:
         except requests.RequestException:
             return False
 
+    def fetch_ax_intervals(
+        self, start: datetime, end: datetime
+    ) -> list[tuple[datetime, datetime, str, str]]:
+        buckets = self._get("/buckets")
+        out: list[tuple[datetime, datetime, str, str]] = []
+        for bucket_id in buckets:
+            if not bucket_id.startswith("aw-watcher-ax"):
+                continue
+            for e in self._fetch_events(bucket_id, start, end):
+                ctx = e["data"].get("context")
+                ax_app = e["data"].get("app")
+                if not ctx or not ax_app:
+                    continue
+                ts = datetime.fromisoformat(e["timestamp"]).astimezone(UTC)
+                ae = ts + timedelta(seconds=float(e["duration"]))
+                out.append((ts, ae, ax_app, ctx))
+        out.sort(key=lambda x: x[0])
+        return out
+
     def _fetch_events(self, bucket_id: str, start: datetime, end: datetime) -> list[dict]:
         events: list[dict] = []
         cursor = start

@@ -44,13 +44,36 @@ cd aw-notion
 The install script will:
 - Detect a Python 3.11+ interpreter, create a `.venv`, and editable-install the package
 - Seed `~/.config/aw-notion/config.toml` from `config.toml.example` if missing
-- On **macOS**: install and load `~/Library/LaunchAgents/com.aw-notion.sync.plist` (15-min `launchd` interval)
+- On **macOS**: install and load `~/Library/LaunchAgents/com.aw-notion.sync.plist` (15-min `launchd` interval), and supervise ActivityWatch's `aw-watcher-window` with a launchd `KeepAlive` agent — see [Keeping the window-watcher alive (macOS)](#keeping-the-window-watcher-alive-macos)
 - On **Linux**: install `aw-notion.service` + `aw-notion.timer` into `~/.config/systemd/user/` and `systemctl --user enable --now aw-notion.timer` (15-min interval)
 
 Then **edit `~/.config/aw-notion/config.toml`** and fill in:
 - `notion.token` — your integration token from <https://www.notion.so/my-integrations>
 - `notion.timelog_db` — your Notion database UUID (from the database URL)
 - `timezone` — your IANA timezone
+
+### Keeping the window-watcher alive (macOS)
+
+aw-notion is only as good as the data ActivityWatch records. On macOS, `aw-qt` starts
+`aw-watcher-window` **once at login and never restarts it** if it dies (sleep/wake,
+crash). When the window-watcher is down, ActivityWatch silently records no window
+events, so every `aw-notion sync` reports `Found 0 focus blocks` and nothing reaches
+Notion — even though aw-notion itself is running fine.
+
+To make this self-healing, the macOS installer:
+
+- installs `~/Library/LaunchAgents/com.aw-watcher-window.keepalive.plist`, a launchd
+  `KeepAlive` agent that runs `aw-watcher-window` and **auto-restarts it within ~30 s**
+  of any death, and starts it at login (`RunAtLoad`);
+- removes `aw-watcher-window` from aw-qt's `autostart_modules` (in
+  `~/Library/Application Support/activitywatch/aw-qt/aw-qt.toml`, backed up as
+  `aw-qt.toml.aw-notion.bak`) so the watcher has exactly one supervisor and never runs
+  twice against the same bucket;
+- restarts ActivityWatch once so the change takes effect.
+
+Verify it: `launchctl list | grep aw-watcher-window` should show the agent, and
+`curl -s localhost:5600/api/0/buckets/ | python3 -m json.tool` should show the
+`aw-watcher-window_<host>` bucket's `last_updated` advancing.
 
 ## Usage
 

@@ -55,6 +55,48 @@ if [ "$OS" = "Darwin" ]; then
     launchctl unload "$PLIST_DST" 2>/dev/null || true
     launchctl load "$PLIST_DST"
 
+    # --- ActivityWatch window-watcher reliability (macOS) ---
+    # aw-qt starts aw-watcher-window ONCE and does not restart it if it dies
+    # (sleep/wake/crash). When it dies, ActivityWatch silently stops recording
+    # window events -> aw-notion finds 0 focus blocks -> nothing reaches Notion.
+    # Fix: supervise the watcher with a launchd KeepAlive agent (auto-restarts on
+    # death, RunAtLoad at login) and drop it from aw-qt's autostart so there is
+    # never a second instance writing to the same bucket.
+    AW_WIN_BIN="/Applications/ActivityWatch.app/Contents/MacOS/aw-watcher-window"
+    if [ -x "$AW_WIN_BIN" ]; then
+        KA_DST="$HOME/Library/LaunchAgents/com.aw-watcher-window.keepalive.plist"
+        echo "Supervising aw-watcher-window with launchd KeepAlive..."
+        sed -e "s|BIN_PATH|$AW_WIN_BIN|g" \
+            -e "s|LOG_DIR|$LOG_DIR|g" \
+            "$INSTALL_DIR/com.aw-watcher-window.keepalive.plist" > "$KA_DST"
+
+        AW_QT_TOML="$HOME/Library/Application Support/activitywatch/aw-qt/aw-qt.toml"
+        if [ -f "$AW_QT_TOML" ]; then
+            cp "$AW_QT_TOML" "$AW_QT_TOML.aw-notion.bak"
+            awk '
+              /^\[aw-qt\][[:space:]]*$/ { print; print "autostart_modules = [\"aw-server\", \"aw-watcher-afk\"]"; inq=1; next }
+              /^\[/ { inq=0 }
+              inq && /^[[:space:]]*#?[[:space:]]*autostart_modules/ { next }
+              { print }
+            ' "$AW_QT_TOML.aw-notion.bak" > "$AW_QT_TOML"
+        fi
+
+        # Restart ActivityWatch so aw-qt re-reads config (no longer launches
+        # window), then let launchd own the watcher. KeepAlive + ThrottleInterval
+        # tolerate aw-server not being up yet at boot (it retries until ready).
+        osascript -e 'quit app "ActivityWatch"' 2>/dev/null || true
+        sleep 3
+        pkill -f "MacOS/aw-watcher-window" 2>/dev/null || true
+        open -a ActivityWatch 2>/dev/null || true
+        sleep 5
+        launchctl unload "$KA_DST" 2>/dev/null || true
+        launchctl load "$KA_DST"
+        echo "✓ aw-watcher-window now auto-restarts on death/sleep (launchd KeepAlive)."
+    else
+        echo "⚠️  ActivityWatch not found at $AW_WIN_BIN — window events won't be recorded."
+        echo "   Install ActivityWatch, then re-run ./install.sh."
+    fi
+
     echo "✓ aw-notion installed. Syncs every 15 min."
     echo "  Logs:         $LOG_DIR/sync.log"
     echo "  Force resync: launchctl kickstart -k gui/\$(id -u)/com.aw-notion.sync"

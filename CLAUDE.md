@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `aw-notion` is a macOS + Linux CLI that pulls window/AFK/web events from a locally running [ActivityWatch](https://activitywatch.net/) instance, compresses them into "focus blocks," and writes each block as a row to a Notion "Time Log" database. A `launchd` agent (macOS) or `systemd --user` timer (Linux) runs `aw-notion sync` every 15 minutes. Python package: `aw_notion`.
 
+**Data-source reliability gotcha (macOS):** if `sync` logs `Found 0 focus blocks` every run while aw-notion is otherwise healthy (`last exit code = 0`), the cause is almost always **ActivityWatch's `aw-watcher-window` being dead**, not aw-notion. `aw-qt` launches that watcher once and does NOT restart it after a sleep/wake or crash, so window events silently stop. Check `pgrep -fl aw-watcher-window` and the `aw-watcher-window_<host>` bucket's `last_updated`. The installer mitigates this by supervising the watcher with a launchd `KeepAlive` agent (`com.aw-watcher-window.keepalive`) and removing it from aw-qt's `autostart_modules` — see README "Keeping the window-watcher alive (macOS)".
+
 ## Commands
 
 ```bash

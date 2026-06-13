@@ -34,11 +34,18 @@ mkdir -p "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_FILE" ]; then
     cp "$CONFIG_TEMPLATE" "$CONFIG_FILE"
-    echo "⚠️  Config created at $CONFIG_FILE"
+    # Token goes here — restrict to owner only so other local users / Spotlight /
+    # backup tools don't read it. Default umask leaves 0644 (world-readable),
+    # which is unacceptable for an API credential.
+    chmod 600 "$CONFIG_FILE"
+    echo "⚠️  Config created at $CONFIG_FILE (mode 600)"
     echo "   Edit it and fill in:"
     echo "     • notion.token       (https://www.notion.so/my-integrations)"
     echo "     • notion.timelog_db  (UUID from your Notion database URL)"
     echo "     • timezone           (your IANA zone)"
+else
+    # Existing install: enforce 600 in case it was created before this fix.
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 fi
 
 if [ "$OS" = "Darwin" ]; then

@@ -87,6 +87,45 @@ def test_afk_event_filters_window_events():
     assert blocks[0].active_seconds == 200
 
 
+def test_intra_event_afk_clipped_from_active_seconds():
+    """H1 regression: one long window event spanning an AFK hole must count only
+    its non-AFK time. 60-min focused window with a 50-min AFK hole → 10 min
+    active (was: full 60 min, because only the start timestamp was AFK-checked)."""
+    events = [win(0, 3600, "Claude", "Claude")]  # 60-min heartbeat-merged event
+    afk_events = [afk(300, 3000)]  # AFK [t=300 .. t=3300] = 50 min idle inside it
+    blocks = compute_focus_blocks(events, afk_events)
+    assert len(blocks) == 1
+    assert blocks[0].active_seconds == 600  # 3600 - 3000
+    assert blocks[0].active_minutes() == 10
+    # start_utc unchanged → signature/dedup stable
+    assert blocks[0].start_utc == dt(0)
+
+
+def test_event_starting_in_afk_keeps_only_active_tail():
+    """An event that starts during AFK but has an active tail contributes only
+    the tail (old code dropped it entirely on the start-timestamp check)."""
+    events = [win(0, 600, "Code", "x")]  # [0, 600]
+    afk_events = [afk(0, 400)]  # AFK covers [0, 400]
+    blocks = compute_focus_blocks(events, afk_events)
+    assert len(blocks) == 1
+    assert blocks[0].active_seconds == 200  # 600 - 400
+
+
+def test_partial_afk_overlap_subtracted_on_merge():
+    """AFK clipping applies to merged events too: the idle slice is subtracted
+    from the merged block's active total, not the wall span."""
+    events = [
+        win(0, 200, "Code", "file.py"),       # [0, 200] fully active
+        win(300, 300, "Code", "file.py"),     # [300, 600], gap 100 < 180 → merge
+    ]
+    afk_events = [afk(400, 150)]  # AFK [400, 550] overlaps the 2nd event by 150s
+    blocks = compute_focus_blocks(events, afk_events)
+    assert len(blocks) == 1
+    # 200 (first) + (300 - 150 afk) = 350
+    assert blocks[0].active_seconds == 350
+    assert blocks[0].end_utc == dt(600)  # wall end unchanged
+
+
 def test_afk_hard_boundary_separates_blocks():
     events = [
         win(0, 150, "Code", "file.py"),

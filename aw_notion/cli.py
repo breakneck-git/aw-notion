@@ -12,7 +12,7 @@ from .activitywatch import ActivityWatchClient
 from .blocks import compute_focus_blocks
 from .config import load_config
 from .git_context import find_git_branch
-from .notion import NotionTimeLogClient
+from .notion import NotionTimeLogClient, block_dedup_key
 from .state import STATE_PATH, State
 
 logging.basicConfig(
@@ -104,12 +104,18 @@ def _filter_excluded(blocks, sync_cfg):
     Returns (kept_blocks, excluded_count). Matching is case-insensitive:
     - `exclude_apps`: exact match against block.app
     - `exclude_url_substrings`: substring match against block.url
+    - `exclude_title_substrings`: substring match against block.title
     """
-    if not sync_cfg.exclude_apps and not sync_cfg.exclude_url_substrings:
+    if not (
+        sync_cfg.exclude_apps
+        or sync_cfg.exclude_url_substrings
+        or sync_cfg.exclude_title_substrings
+    ):
         return list(blocks), 0
 
     excluded_apps = {a.lower() for a in sync_cfg.exclude_apps}
     excluded_url_subs = [s.lower() for s in sync_cfg.exclude_url_substrings]
+    excluded_title_subs = [s.lower() for s in sync_cfg.exclude_title_substrings]
 
     kept = []
     excluded = 0
@@ -120,6 +126,11 @@ def _filter_excluded(blocks, sync_cfg):
         if b.url and excluded_url_subs:
             u = b.url.lower()
             if any(s in u for s in excluded_url_subs):
+                excluded += 1
+                continue
+        if b.title and excluded_title_subs:
+            t = b.title.lower()
+            if any(s in t for s in excluded_title_subs):
                 excluded += 1
                 continue
         kept.append(b)
@@ -140,12 +151,15 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
     if since is not None:
         start = _parse_since(since)
         log.info("Override start to %s", start.isoformat())
+        backfill = True
     elif state.last_sync is None:
         start = now - timedelta(days=cfg.sync.initial_sync_days)
         log.info("First run: syncing last %d days", cfg.sync.initial_sync_days)
+        backfill = True
     else:
         start = state.last_sync - timedelta(minutes=30)
         log.info("Incremental sync from %s", start.isoformat())
+        backfill = False
 
     window_events, afk_events = aw.get_all_events(
         start, now, browser_apps=cfg.activitywatch.browser_apps
@@ -162,10 +176,11 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
     blocks, excluded_count = _filter_excluded(blocks, cfg.sync)
     if excluded_count:
         log.info(
-            "Excluded %d block(s) per config (apps=%s, url_substrings=%s)",
+            "Excluded %d block(s) per config (apps=%s, url_substrings=%s, title_substrings=%s)",
             excluded_count,
             cfg.sync.exclude_apps,
             cfg.sync.exclude_url_substrings,
+            cfg.sync.exclude_title_substrings,
         )
 
     for block in blocks:
@@ -181,12 +196,29 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
         if not dry_run
         else None
     )
+
+    # Backfill (--since / first run) reaches past the state prune window, so
+    # signature-based dedup can't see entries already in Notion and would
+    # recreate them as duplicates. Pull existing keys straight from Notion and
+    # gate creation on them too. Read-only, so we run it even in dry-run (for an
+    # honest "would create" count). Skipped on plain incremental syncs — state
+    # dedup covers the 30-min rewind and we avoid a query every 15 minutes.
+    existing_keys: set[tuple[str, str]] = set()
+    if backfill:
+        reader = notion or NotionTimeLogClient(
+            cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields
+        )
+        existing_keys = reader.fetch_existing_keys(start)
+        log.info("Backfill dedup: %d existing Notion entries in window", len(existing_keys))
+
     tz = ZoneInfo(cfg.timezone)
     new_count = 0
 
     for block in blocks:
         sig = block.signature()
-        if sig in state.notion_entries:
+        already_synced = sig in state.notion_entries
+        already_in_notion = block_dedup_key(block.app, block.start_utc) in existing_keys
+        if already_synced or already_in_notion:
             continue
 
         if dry_run:

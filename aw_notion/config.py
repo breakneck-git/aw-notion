@@ -54,9 +54,16 @@ class SyncConfig:
     # never reach Notion AND never get a signature recorded in state — if you
     # later remove the entry from exclusion config, only NEW events of that
     # kind start syncing (already-excluded past events stay excluded unless
-    # you force `--since`).
+    # you force `--since`). A forced `--since` is now idempotent: it dedups
+    # against entries already in Notion (NotionTimeLogClient.fetch_existing_keys),
+    # so re-syncing a past window fills gaps without creating duplicates.
     exclude_apps: list[str] = field(default_factory=list)
     exclude_url_substrings: list[str] = field(default_factory=list)
+    # Title-based exclusion. Privacy must not hinge on the URL alone: web-watcher
+    # can attach the wrong tab's URL to a block (background-tab heartbeats), so a
+    # sensitive page can slip past `exclude_url_substrings` on a clean URL. Match
+    # the window title too. Case-insensitive substring match against block title.
+    exclude_title_substrings: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -58,3 +58,7 @@ initial_sync_days = 7
 # starts syncing NEW events of that kind; past events stay excluded.
 # exclude_apps = ["loginwindow", "Telegram"]
 # exclude_url_substrings = ["pornhub", "bank.example.com"]
+# Title match is more reliable than URL for privacy: the web-watcher can attach
+# the wrong tab's URL to a block, so a sensitive page may carry a clean URL.
+# Excluding by window title closes that gap.
+# exclude_title_substrings = ["pornhub", "incognito"]

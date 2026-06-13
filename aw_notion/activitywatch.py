@@ -13,26 +13,81 @@ _PAGE_LIMIT = 10000
 
 _ZERO_DURATION_EPSILON = timedelta(seconds=1)
 
+# Minimum title similarity for a web event's title to override the plain
+# temporal-first pick. Below this we fall back to first-overlap (old behavior).
+_TITLE_MATCH_MIN = 0.34
+
+# Generic / placeholder window titles that are NOT per-tab identifiers, so the
+# (app, title) URL backfill must not key on them (they collide across unrelated
+# tabs and smear one tab's URL onto others).
+_GENERIC_TITLE_MARKERS = (
+    "newtab",
+    "new tab",
+    "untitled",
+    "картинка в картинке",
+    "picture in picture",
+    "picture-in-picture",
+)
+
+
+def _title_match_score(win_title: str | None, web_title: str | None) -> float:
+    """Cheap similarity in [0, 1] between a window title and a web page title.
+    Exact match = 1.0, containment either way = 0.9, else word-level Jaccard."""
+    a = (win_title or "").casefold().strip()
+    b = (web_title or "").casefold().strip()
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if b in a or a in b:
+        return 0.9
+    ta, tb = set(a.split()), set(b.split())
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _is_generic_title(title: str | None) -> bool:
+    t = (title or "").strip().casefold()
+    if not t:
+        return True
+    return any(m in t for m in _GENERIC_TITLE_MARKERS)
+
 
 def _find_url_by_overlap(
-    web_intervals: list[tuple[datetime, datetime, str]],
+    web_intervals: list[tuple[datetime, datetime, str, str]],
     win_start: datetime,
     win_end: datetime,
+    win_title: str | None = None,
 ) -> str | None:
     """
-    Return the URL of the first web event whose interval overlaps
-    [win_start, win_end]. Zero-duration web events are treated as having
-    a tiny _ZERO_DURATION_EPSILON span so they can still match.
+    Return the URL of a web event whose interval overlaps [win_start, win_end],
+    preferring the one whose page title best matches the window title. The
+    web-watcher keeps emitting heartbeats for background tabs, so the *first*
+    temporal overlap is frequently the wrong tab; a confident title match
+    (>= _TITLE_MATCH_MIN) disambiguates. Falls back to the first overlap when no
+    title matches well or `win_title` is empty (old behavior). Zero-duration web
+    events get a tiny _ZERO_DURATION_EPSILON span so they still match.
 
     web_intervals must be sorted by start timestamp.
     """
-    for ws, we, url in web_intervals:
+    first_overlap_url: str | None = None
+    best_url: str | None = None
+    best_score = -1.0
+    for ws, we, url, web_title in web_intervals:
         if ws >= win_end:
             break
         effective_we = we if we > ws else ws + _ZERO_DURATION_EPSILON
         if effective_we > win_start:
-            return url
-    return None
+            if first_overlap_url is None:
+                first_overlap_url = url
+            score = _title_match_score(win_title, web_title)
+            if score > best_score:
+                best_score = score
+                best_url = url
+    if best_score >= _TITLE_MATCH_MIN:
+        return best_url
+    return first_overlap_url
 
 
 def _find_note_by_overlap(
@@ -137,7 +192,7 @@ class ActivityWatchClient:
         browser_set = {a.casefold() for a in browser_apps}
         buckets = self._get("/buckets")
 
-        web_intervals: list[tuple[datetime, datetime, str]] = []
+        web_intervals: list[tuple[datetime, datetime, str, str]] = []
         for bucket_id in buckets:
             if not bucket_id.startswith("aw-watcher-web"):
                 continue
@@ -147,7 +202,7 @@ class ActivityWatchClient:
                     continue
                 ts = datetime.fromisoformat(e["timestamp"]).astimezone(UTC)
                 we = ts + timedelta(seconds=float(e["duration"]))
-                web_intervals.append((ts, we, url))
+                web_intervals.append((ts, we, url, e["data"].get("title", "")))
         web_intervals.sort(key=lambda x: x[0])
 
         ax_intervals: list[tuple[datetime, datetime, str, str]] = []
@@ -173,16 +228,17 @@ class ActivityWatchClient:
                 duration = float(e["duration"])
                 win_end = ts + timedelta(seconds=duration)
                 app = e["data"].get("app", "Unknown")
+                title = e["data"].get("title", "")
                 url = None
                 if app.casefold() in browser_set:
-                    url = _find_url_by_overlap(web_intervals, ts, win_end)
+                    url = _find_url_by_overlap(web_intervals, ts, win_end, title)
                 note = _find_note_by_overlap(ax_intervals, ts, win_end, app)
                 window_events.append(
                     AWEvent(
                         timestamp=ts,
                         duration=duration,
                         app=app,
-                        title=e["data"].get("title", ""),
+                        title=title,
                         url=url,
                         note=note,
                     )
@@ -193,12 +249,15 @@ class ActivityWatchClient:
         # long window-watcher events for the same tab sit earlier without a
         # temporal overlap. Since title is effectively per-tab, it's safe to
         # propagate the URL to other window events of the same (app, title).
+        # Generic/empty titles (newtab, picture-in-picture, …) are NOT per-tab
+        # identifiers — they collide across unrelated tabs and would smear one
+        # tab's URL onto others — so they are excluded from this backfill.
         url_by_key: dict[tuple[str, str], str] = {}
         for e in window_events:
-            if e.url:
+            if e.url and not _is_generic_title(e.title):
                 url_by_key.setdefault((e.app, e.title), e.url)
         for e in window_events:
-            if e.url is None:
+            if e.url is None and not _is_generic_title(e.title):
                 e.url = url_by_key.get((e.app, e.title))
 
         afk_events: list[AFKEvent] = []

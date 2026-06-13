@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from aw_notion import cli
-from aw_notion.blocks import AWEvent
-from aw_notion.cli import _acquire_lock, main, sync
+from aw_notion.blocks import AWEvent, FocusBlock
+from aw_notion.cli import _acquire_lock, _filter_excluded, main, sync
 from aw_notion.config import (
     ActivityWatchConfig,
     Config,
@@ -78,6 +78,10 @@ def sync_env(tmp_path, monkeypatch):
             captured["notion_calls"].append(block)
             return "page-xyz"
 
+        def fetch_existing_keys(self, start_utc):
+            captured["existing_keys_queried_from"] = start_utc
+            return set(captured.get("existing_keys", set()))
+
     monkeypatch.setattr(cli, "ActivityWatchClient", FakeAW)
     monkeypatch.setattr(cli, "NotionTimeLogClient", FakeNotion)
     captured["tmp_path"] = tmp_path
@@ -103,6 +107,26 @@ def test_sync_since_overrides_start(sync_env):
     sync(dry_run=True, since="2026-04-05T00:00:00")
     expected = datetime(2026, 4, 5, 0, 0, tzinfo=UTC)
     assert sync_env["aw_start"] == expected
+
+
+def test_sync_since_skips_entries_already_in_notion(sync_env):
+    """H9 regression: a --since backfill must NOT recreate an entry that already
+    exists in Notion (whose signature was pruned from local state). The fake AW
+    emits one 'Code' block starting at since+1s; seed Notion with its key."""
+    from aw_notion.notion import block_dedup_key
+
+    key = block_dedup_key("Code", datetime(2026, 4, 5, 0, 0, 1, tzinfo=UTC))
+    sync_env["existing_keys"] = {key}
+    sync(since="2026-04-05T00:00:00")
+    assert sync_env["notion_calls"] == [], "existing Notion entry must be skipped, not duplicated"
+    # The Notion-side dedup query was scoped to the --since window start.
+    assert sync_env["existing_keys_queried_from"] == datetime(2026, 4, 5, 0, 0, tzinfo=UTC)
+
+
+def test_sync_since_creates_when_absent(sync_env):
+    """Counterpart: with no matching Notion entry, --since still creates."""
+    sync(since="2026-04-05T00:00:00")
+    assert len(sync_env["notion_calls"]) == 1
 
 
 def test_main_parses_dry_run(monkeypatch):
@@ -205,6 +229,9 @@ def test_sync_runs_git_fallback_for_path_like_titles(tmp_path, monkeypatch):
             blocks.append(block)
             return f"page-{len(blocks)}"
 
+        def fetch_existing_keys(self, start_utc):
+            return set()
+
     def fake_find_git_branch(path, block_end):
         git_calls.append(path)
         return "aw-notion @ main"
@@ -270,6 +297,9 @@ def test_sync_git_fallback_does_not_override_existing_note(tmp_path, monkeypatch
             blocks.append(block)
             return "page-xyz"
 
+        def fetch_existing_keys(self, start_utc):
+            return set()
+
     def fake_find_git_branch(path, block_end):
         nonlocal git_called
         git_called = True
@@ -288,21 +318,30 @@ def test_sync_git_fallback_does_not_override_existing_note(tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 # Exclusion filter (cli._filter_excluded)
 # ---------------------------------------------------------------------------
-from datetime import UTC, datetime, timedelta
-from aw_notion.blocks import FocusBlock
-from aw_notion.cli import _filter_excluded
-
-
-def _b(app: str, url: str | None = None) -> FocusBlock:
+def _b(app: str, url: str | None = None, title: str = "x") -> FocusBlock:
     base = datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
     return FocusBlock(
         app=app,
-        title="x",
+        title=title,
         start_utc=base,
         end_utc=base + timedelta(seconds=300),
         active_seconds=300,
         url=url,
     )
+
+
+def test_filter_excluded_by_title_substring():
+    """Privacy: a sensitive page can carry a *clean* URL (wrong-tab enrichment),
+    so title-based exclusion must catch it independent of the URL."""
+    blocks = [
+        _b("Comet", url="https://clean.example.com", title="Pornhub - Best Of - Comet"),
+        _b("Comet", url="https://github.com/x/y", title="GitHub - Comet"),
+    ]
+    cfg = SyncConfig(exclude_title_substrings=["pornhub"])
+    kept, n = _filter_excluded(blocks, cfg)
+    assert n == 1
+    assert len(kept) == 1
+    assert kept[0].title == "GitHub - Comet"
 
 
 def test_filter_excluded_no_rules_returns_all():

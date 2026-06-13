@@ -344,6 +344,121 @@ def test_url_backfills_across_same_app_title_window_events():
 
 
 @responses.activate
+def test_url_picks_tab_matching_title_not_first_overlap():
+    """H6 regression: when several web events (background-tab heartbeats) overlap
+    a window event, the URL of the tab whose title matches the window title wins,
+    not merely the earliest overlap."""
+    buckets_with_web = {
+        **BUCKETS,
+        "aw-watcher-web-comet_testhost": {"type": "web.tab.current"},
+    }
+    window_events = [
+        {
+            "id": 1,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 120.0,
+            "data": {"app": "Comet", "title": "ScriptoriumGM - Comet"},
+        },
+    ]
+    # Two overlapping web events; the WRONG tab (online-go) heartbeats first.
+    web_events = [
+        {
+            "id": 10,
+            "timestamp": "2026-04-11T10:00:05.000000+00:00",
+            "duration": 40.0,
+            "data": {"title": "OGS Online Go", "url": "https://online-go.com/"},
+        },
+        {
+            "id": 11,
+            "timestamp": "2026-04-11T10:00:10.000000+00:00",
+            "duration": 40.0,
+            "data": {"title": "ScriptoriumGM", "url": "https://scriptoriumgm.com/"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_web)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-web-comet_testhost/events",
+        json=web_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    assert len(window) == 1
+    # Title-match beats temporal-first: online-go heartbeats earlier but the
+    # focused tab is ScriptoriumGM.
+    assert window[0].url == "https://scriptoriumgm.com/"
+
+
+@responses.activate
+def test_generic_title_does_not_backfill_url():
+    """H6 regression: generic/placeholder titles (newtab, …) are not per-tab
+    identifiers, so a URL must NOT smear across (app, title)=newtab events."""
+    buckets_with_web = {
+        **BUCKETS,
+        "aw-watcher-web-comet_testhost": {"type": "web.tab.current"},
+    }
+    window_events = [
+        {
+            "id": 1,
+            "timestamp": "2026-04-11T10:00:00.000000+00:00",
+            "duration": 60.0,
+            "data": {"app": "Comet", "title": "newtab"},  # overlaps web below
+        },
+        {
+            "id": 2,
+            "timestamp": "2026-04-11T10:10:00.000000+00:00",
+            "duration": 60.0,
+            "data": {"app": "Comet", "title": "newtab"},  # no overlap
+        },
+    ]
+    web_events = [
+        {
+            "id": 10,
+            "timestamp": "2026-04-11T10:00:30.000000+00:00",
+            "duration": 10.0,
+            "data": {"title": "Example", "url": "https://example.com/"},
+        },
+    ]
+    responses.add(responses.GET, f"{BASE}/buckets", json=buckets_with_web)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=window_events,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-afk_testhost/events",
+        json=AFK_EVENTS,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-web-comet_testhost/events",
+        json=web_events,
+    )
+    client = ActivityWatchClient()
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window, _ = client.get_all_events(start, end)
+    by_id = sorted(window, key=lambda e: e.timestamp)
+    # First event still gets the URL from its own temporal overlap.
+    assert by_id[0].url == "https://example.com/"
+    # Second (generic title, no overlap) must NOT be backfilled.
+    assert by_id[1].url is None
+
+
+@responses.activate
 def test_window_events_without_overlap_have_no_url():
     """Window events that don't overlap any web event keep url=None."""
     buckets_with_web = {

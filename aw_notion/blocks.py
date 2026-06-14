@@ -97,55 +97,43 @@ def compute_focus_blocks(
         return []
 
     blocks: list[FocusBlock] = []
+
+    def new_block(e: AWEvent, ev_active: float) -> FocusBlock:
+        return FocusBlock(
+            app=e.app,
+            title=e.title,
+            start_utc=e.timestamp,
+            end_utc=e.timestamp + timedelta(seconds=e.duration),
+            active_seconds=ev_active,
+            url=e.url,
+            note=e.note,
+        )
+
+    def flush(b: FocusBlock) -> None:
+        # Blocks shorter than min_duration (active time, not wall) drop on close.
+        if b.active_seconds >= min_duration_sec:
+            blocks.append(b)
+
     first, first_active = active[0]
-    cur = FocusBlock(
-        app=first.app,
-        title=first.title,
-        start_utc=first.timestamp,
-        end_utc=first.timestamp + timedelta(seconds=first.duration),
-        active_seconds=first_active,
-        url=first.url,
-        note=first.note,
-    )
+    cur = new_block(first, first_active)
 
     for event, ev_active in active[1:]:
-        event_end = event.timestamp + timedelta(seconds=event.duration)
         gap_sec = (event.timestamp - cur.end_utc).total_seconds()
         same = event.app == cur.app and event.title == cur.title
 
-        if gap_sec > afk_threshold_sec:
-            if cur.active_seconds >= min_duration_sec:
-                blocks.append(cur)
-            cur = FocusBlock(
-                app=event.app,
-                title=event.title,
-                start_utc=event.timestamp,
-                end_utc=event_end,
-                active_seconds=ev_active,
-                url=event.url,
-                note=event.note,
-            )
-        elif same and gap_sec <= merge_gap_sec:
-            cur.end_utc = event_end
+        if gap_sec > afk_threshold_sec:  # (a) hard AFK boundary → close + start
+            flush(cur)
+            cur = new_block(event, ev_active)
+        elif same and gap_sec <= merge_gap_sec:  # (b) same activity → extend
+            cur.end_utc = event.timestamp + timedelta(seconds=event.duration)
             cur.active_seconds += ev_active
             if cur.url is None and event.url is not None:
                 cur.url = event.url
             if cur.note is None and event.note is not None:
                 cur.note = event.note
-        else:
-            if cur.active_seconds >= min_duration_sec:
-                blocks.append(cur)
-            cur = FocusBlock(
-                app=event.app,
-                title=event.title,
-                start_utc=event.timestamp,
-                end_utc=event_end,
-                active_seconds=ev_active,
-                url=event.url,
-                note=event.note,
-            )
+        else:  # (c) different activity → close + start
+            flush(cur)
+            cur = new_block(event, ev_active)
 
-    if cur.active_seconds >= min_duration_sec:
-        blocks.append(cur)
-
+    flush(cur)
     return blocks

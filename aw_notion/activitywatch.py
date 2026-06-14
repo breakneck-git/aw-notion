@@ -17,6 +17,11 @@ _ZERO_DURATION_EPSILON = timedelta(seconds=1)
 # temporal-first pick. Below this we fall back to first-overlap (old behavior).
 _TITLE_MATCH_MIN = 0.34
 
+# A containment match (one title is a substring of the other) only counts when
+# the shorter string is at least this long. Without it, a 2-3 char fragment
+# ("go" inside "Google") scores a false 0.9 and picks the wrong tab.
+_MIN_CONTAINMENT_LEN = 4
+
 # Generic / placeholder window titles that are NOT per-tab identifiers, so the
 # (app, title) URL backfill must not key on them (they collide across unrelated
 # tabs and smear one tab's URL onto others).
@@ -39,7 +44,7 @@ def _title_match_score(win_title: str | None, web_title: str | None) -> float:
         return 0.0
     if a == b:
         return 1.0
-    if b in a or a in b:
+    if (b in a and len(b) >= _MIN_CONTAINMENT_LEN) or (a in b and len(a) >= _MIN_CONTAINMENT_LEN):
         return 0.9
     ta, tb = set(a.split()), set(b.split())
     if not ta or not tb:

@@ -200,3 +200,14 @@ def test_note_not_in_signature():
     assert (
         compute_focus_blocks(e1, [])[0].signature() == compute_focus_blocks(e2, [])[0].signature()
     )
+
+
+def test_multiple_afk_intervals_within_one_event_all_subtracted():
+    """A single long window event spanning several AFK holes loses ALL of them
+    (per-interval overlaps sum), not just the first."""
+    events = [win(0, 600, "Code", "x")]  # 10-min focused window
+    afk_events = [afk(60, 120), afk(300, 120)]  # two 2-min AFK holes inside it
+    blocks = compute_focus_blocks(events, afk_events)
+    assert len(blocks) == 1
+    assert blocks[0].active_seconds == 360  # 600 - 120 - 120
+    assert blocks[0].active_minutes() == 6

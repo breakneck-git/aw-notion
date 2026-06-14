@@ -13,7 +13,17 @@ def block_dedup_key(app: str, start_utc: datetime) -> tuple[str, str]:
     config `timezone` change: a past entry was written with its then-current
     offset, but the underlying instant is invariant. Used to dedup `--since`
     backfills against Notion's actual contents (signature-based state dedup
-    only covers a short prune window)."""
+    only covers a short prune window).
+
+    Title is deliberately excluded:
+    - (app, minute) is collision-free for the entries we create. Window events
+      never overlap (one focused window at a time) and a *kept* block spans at
+      least `min_duration_sec` (≥2 min wall), so two kept blocks of the same
+      app always start ≥2 min apart — never in the same minute.
+    - Keying on title would *introduce* a failure: the Pipedream merge rewrites
+      a merged entry's Entry/title, so a re-synced block's recomputed title can
+      diverge from what Notion stores, and the entry would be recreated as a
+      duplicate. The loose key avoids that."""
     minute = start_utc.astimezone(UTC).replace(second=0, microsecond=0)
     return ((app or "").lower(), minute.isoformat())
 

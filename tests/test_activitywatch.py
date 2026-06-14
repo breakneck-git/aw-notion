@@ -2,7 +2,11 @@ from datetime import UTC, datetime
 
 import responses
 
-from aw_notion.activitywatch import ActivityWatchClient
+from aw_notion.activitywatch import (
+    _TITLE_MATCH_MIN,
+    ActivityWatchClient,
+    _title_match_score,
+)
 
 BASE = "http://localhost:5600/api/0"
 
@@ -627,3 +631,35 @@ def test_ax_note_respects_app_filter():
     window, _ = client.get_all_events(start, end)
     assert len(window) == 1
     assert window[0].note is None
+
+
+# =====================================================================
+# _title_match_score — used by _find_url_by_overlap to pick the right tab.
+# =====================================================================
+class TestTitleMatchScore:
+    def test_exact_match_is_one(self):
+        assert _title_match_score("GitHub - Comet", "GitHub - Comet") == 1.0
+
+    def test_case_insensitive_exact(self):
+        assert _title_match_score("GitHub", "github") == 1.0
+
+    def test_long_containment_scores_high(self):
+        # web page title is a substring of the window title (browser suffix)
+        assert _title_match_score("ScriptoriumGM - Comet (breakneck)", "ScriptoriumGM") == 0.9
+
+    def test_four_char_containment_accepted(self):
+        assert _title_match_score("Code - main.py", "Code") == 0.9
+
+    def test_short_token_containment_rejected(self):
+        # "go" sits inside "google docs" but is too short to be a real match;
+        # must NOT score the 0.9 containment bonus (would pick the wrong tab).
+        assert _title_match_score("Google Docs", "go") < _TITLE_MATCH_MIN
+
+    def test_empty_returns_zero(self):
+        assert _title_match_score("", "x") == 0.0
+        assert _title_match_score("x", None) == 0.0
+        assert _title_match_score(None, None) == 0.0
+
+    def test_token_jaccard_partial(self):
+        s = _title_match_score("alpha beta", "beta gamma")
+        assert 0.0 < s < 1.0

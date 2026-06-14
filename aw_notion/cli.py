@@ -191,11 +191,10 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
         ax_intervals = aw.fetch_ax_intervals(start, now)
         _log_blocks_debug(blocks, ax_intervals, state.notion_entries)
 
-    notion = (
-        NotionTimeLogClient(cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields)
-        if not dry_run
-        else None
-    )
+    # Constructing the client is side-effect-free (no network until a call is
+    # made), so build it unconditionally; dry-run is enforced at the write site
+    # below, not by withholding the client.
+    notion = NotionTimeLogClient(cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields)
 
     # Backfill (--since / first run) reaches past the state prune window, so
     # signature-based dedup can't see entries already in Notion and would
@@ -205,10 +204,7 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
     # dedup covers the 30-min rewind and we avoid a query every 15 minutes.
     existing_keys: set[tuple[str, str]] = set()
     if backfill:
-        reader = notion or NotionTimeLogClient(
-            cfg.notion.token, cfg.notion.timelog_db, fields=cfg.notion.fields
-        )
-        existing_keys = reader.fetch_existing_keys(start)
+        existing_keys = notion.fetch_existing_keys(start)
         log.info("Backfill dedup: %d existing Notion entries in window", len(existing_keys))
 
     tz = ZoneInfo(cfg.timezone)
@@ -233,7 +229,6 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
             continue
 
         try:
-            assert notion is not None
             page_id = notion.create_entry(block, tz)
             state.notion_entries[sig] = {
                 "page_id": page_id,

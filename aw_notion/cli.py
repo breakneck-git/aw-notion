@@ -12,6 +12,7 @@ from .activitywatch import ActivityWatchClient
 from .blocks import compute_focus_blocks
 from .config import load_config
 from .git_context import find_git_branch
+from .health import check_health
 from .notion import NotionTimeLogClient, block_dedup_key
 from .state import STATE_PATH, State
 
@@ -142,7 +143,9 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
     state = State.load(STATE_PATH)
 
     aw = ActivityWatchClient(cfg.activitywatch.base_url)
-    if not aw.is_running():
+    # Alerts (ERROR + desktop notification) on a down server or a dead window
+    # watcher — both otherwise just yield "0 focus blocks" forever, silently.
+    if not check_health(aw):
         log.warning("ActivityWatch is not running, skipping sync")
         return
 

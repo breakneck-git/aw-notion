@@ -55,6 +55,12 @@ def test_is_running_false_when_connection_error():
 
 
 @responses.activate
+def test_buckets_returns_bucket_metadata():
+    responses.add(responses.GET, f"{BASE}/buckets", json=BUCKETS)
+    assert ActivityWatchClient().buckets() == BUCKETS
+
+
+@responses.activate
 def test_get_all_events_returns_window_and_afk():
     responses.add(responses.GET, f"{BASE}/buckets", json=BUCKETS)
     responses.add(

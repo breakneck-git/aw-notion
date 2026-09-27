@@ -88,6 +88,21 @@ def sync_env(tmp_path, monkeypatch):
     return captured
 
 
+def test_sync_runs_health_check_before_fetching(sync_env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "check_health", lambda aw: seen.append(aw) or True)
+    sync()
+    assert len(seen) == 1
+    assert len(sync_env["notion_calls"]) == 1
+
+
+def test_sync_skips_when_health_check_reports_server_down(sync_env, monkeypatch):
+    monkeypatch.setattr(cli, "check_health", lambda aw: False)
+    sync()
+    assert sync_env["aw_start"] is None
+    assert sync_env["notion_calls"] == []
+
+
 def test_sync_dry_run_skips_notion(sync_env):
     sync(dry_run=True)
     assert sync_env["notion_calls"] == []

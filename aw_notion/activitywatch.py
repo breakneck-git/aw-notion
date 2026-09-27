@@ -128,6 +128,9 @@ class ActivityWatchClient:
         resp.raise_for_status()
         return resp.json()
 
+    def buckets(self) -> dict:
+        return self._get("/buckets")
+
     def is_running(self) -> bool:
         try:
             self._get("/info")

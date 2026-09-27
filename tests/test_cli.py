@@ -3,10 +3,12 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
+from notion_client.errors import HTTPResponseError, RequestTimeoutError
 
 from aw_notion import cli
-from aw_notion.blocks import AWEvent, FocusBlock
+from aw_notion.blocks import AFKEvent, AWEvent, FocusBlock
 from aw_notion.cli import _acquire_lock, _filter_excluded, main, sync
 from aw_notion.config import (
     ActivityWatchConfig,
@@ -14,6 +16,7 @@ from aw_notion.config import (
     NotionConfig,
     SyncConfig,
 )
+from aw_notion.notion import block_dedup_key
 
 
 def test_acquire_lock_succeeds_when_free(tmp_path):
@@ -62,8 +65,10 @@ def sync_env(tmp_path, monkeypatch):
             captured["aw_start"] = start
             captured["aw_end"] = end
             captured["browser_apps"] = browser_apps
+            # Settled (ended well before `end`) and inside any commit range.
+            captured["event_ts"] = end - timedelta(minutes=30)
             evt = AWEvent(
-                timestamp=start + timedelta(seconds=1),
+                timestamp=captured["event_ts"],
                 duration=300.0,
                 app="Code",
                 title="test.py",
@@ -80,7 +85,9 @@ def sync_env(tmp_path, monkeypatch):
 
         def fetch_existing_keys(self, start_utc):
             captured["existing_keys_queried_from"] = start_utc
-            return set(captured.get("existing_keys", set()))
+            if captured.get("seed_existing"):
+                return {block_dedup_key("Code", captured["event_ts"])}
+            return set()
 
     monkeypatch.setattr(cli, "ActivityWatchClient", FakeAW)
     monkeypatch.setattr(cli, "NotionTimeLogClient", FakeNotion)
@@ -94,6 +101,21 @@ def test_sync_runs_health_check_before_fetching(sync_env, monkeypatch):
     sync()
     assert len(seen) == 1
     assert len(sync_env["notion_calls"]) == 1
+
+
+def test_dry_run_health_check_does_not_send_alerts(sync_env, monkeypatch):
+    """--dry-run is for looking, not acting: it must not fire real Telegram
+    alerts (nor record them as sent)."""
+    seen = {}
+
+    def fake_check(aw, **kwargs):
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli, "check_health", fake_check)
+    sync(dry_run=True)
+    assert "alert" in seen, "dry-run must override the alert channel"
+    assert seen["alert"]("aw-server down") is False
 
 
 def test_sync_skips_when_health_check_reports_server_down(sync_env, monkeypatch):
@@ -121,17 +143,15 @@ def test_sync_dry_run_does_not_write_state(sync_env):
 def test_sync_since_overrides_start(sync_env):
     sync(dry_run=True, since="2026-04-05T00:00:00")
     expected = datetime(2026, 4, 5, 0, 0, tzinfo=UTC)
-    assert sync_env["aw_start"] == expected
+    # Fetch reaches merge_gap(+margin) earlier so boundary blocks aren't clipped.
+    assert sync_env["aw_start"] == expected - timedelta(seconds=180) - cli.FETCH_MARGIN
 
 
 def test_sync_since_skips_entries_already_in_notion(sync_env):
     """H9 regression: a --since backfill must NOT recreate an entry that already
-    exists in Notion (whose signature was pruned from local state). The fake AW
-    emits one 'Code' block starting at since+1s; seed Notion with its key."""
-    from aw_notion.notion import block_dedup_key
-
-    key = block_dedup_key("Code", datetime(2026, 4, 5, 0, 0, 1, tzinfo=UTC))
-    sync_env["existing_keys"] = {key}
+    exists in Notion (whose signature was pruned from local state). Seed
+    Notion with the key of the one 'Code' block the fake AW emits."""
+    sync_env["seed_existing"] = True
     sync(since="2026-04-05T00:00:00")
     assert sync_env["notion_calls"] == [], "existing Notion entry must be skipped, not duplicated"
     # The Notion-side dedup query was scoped to the --since window start.
@@ -221,13 +241,13 @@ def test_sync_runs_git_fallback_for_path_like_titles(tmp_path, monkeypatch):
             return (
                 [
                     AWEvent(
-                        timestamp=start + timedelta(seconds=1),
+                        timestamp=end - timedelta(minutes=30),
                         duration=300.0,
                         app="Ghostty",
                         title="~/code/aw-notion",
                     ),
                     AWEvent(
-                        timestamp=start + timedelta(seconds=1),
+                        timestamp=end - timedelta(minutes=20),
                         duration=300.0,
                         app="Chrome",
                         title="GitHub — Chrome",
@@ -294,7 +314,7 @@ def test_sync_git_fallback_does_not_override_existing_note(tmp_path, monkeypatch
             return (
                 [
                     AWEvent(
-                        timestamp=start + timedelta(seconds=1),
+                        timestamp=end - timedelta(minutes=30),
                         duration=300.0,
                         app="Ghostty",
                         title="~/code/aw-notion",
@@ -357,6 +377,15 @@ def test_filter_excluded_by_title_substring():
     assert n == 1
     assert len(kept) == 1
     assert kept[0].title == "GitHub - Comet"
+
+
+def test_filter_excluded_title_substring_also_matches_note():
+    """Privacy: the note carries the ax context (e.g. a Telegram chat name) —
+    a title rule must keep it out of Notion just like a matching title."""
+    b = _b("Telegram", title="Telegram")
+    b.note = "Secret Project chat"
+    kept, n = _filter_excluded([b], SyncConfig(exclude_title_substrings=["secret project"]))
+    assert (kept, n) == ([], 1)
 
 
 def test_filter_excluded_no_rules_returns_all():
@@ -424,3 +453,221 @@ def test_filter_excluded_url_check_skipped_when_no_url():
     kept, n = _filter_excluded(blocks, cfg)
     assert n == 0
     assert kept == blocks
+
+
+class ClippingAW:
+    """Fake aw-server that behaves like the real one on range queries: an event
+    overlapping the query's start is returned clipped to it (verified live:
+    01:43:24/1728s → 01:57:48/864s), and an event still being heartbeated is
+    only as long as `now` lets it be."""
+
+    def __init__(self, events, clock, afk=()):
+        self._events = events  # [(app, title, start, end)] — true, unclipped
+        self._clock = clock
+        self._afk = afk  # [(start, end)]
+
+    def is_running(self):
+        return True
+
+    def get_all_events(self, start, end, browser_apps=None):
+        out = []
+        for app, title, ev_start, ev_end in self._events:
+            ev_end = min(ev_end, self._clock["now"])
+            lo, hi = max(ev_start, start), min(ev_end, end)
+            if hi > lo:
+                out.append(
+                    AWEvent(timestamp=lo, duration=(hi - lo).total_seconds(), app=app, title=title)
+                )
+        afk = [
+            AFKEvent(timestamp=a_s, duration=(a_e - a_s).total_seconds(), status="afk")
+            for a_s, a_e in self._afk
+        ]
+        return out, afk
+
+
+@pytest.fixture
+def clipping_env(tmp_path, monkeypatch):
+    cfg = Config(
+        notion=NotionConfig(token="t", timelog_db="db"),
+        activitywatch=ActivityWatchConfig(),
+        sync=SyncConfig(),
+        timezone="UTC",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    monkeypatch.setattr(cli, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(cli, "LOCK_PATH", tmp_path / "sync.lock")
+    # fail: {app: exception} raised once for that app's next create_entry.
+    # lost_response: apps whose POST lands in Notion but whose reply is lost.
+    env = {
+        "events": [],
+        "afk": [],
+        "clock": {},
+        "created": [],
+        "fail": {},
+        "lost_response": set(),
+        "attempts": [],
+        "keys_queried": [],
+    }
+
+    class FakeNotion:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_entry(self, block, tz):
+            env["attempts"].append(block.app)
+            exc = env["fail"].pop(block.app, None)
+            if exc is not None:
+                raise exc
+            env["created"].append(block)
+            if block.app in env["lost_response"]:
+                env["lost_response"].discard(block.app)
+                raise RequestTimeoutError()
+            return f"page-{len(env['created'])}"
+
+        def fetch_existing_keys(self, start_utc):
+            env["keys_queried"].append(start_utc)
+            return {
+                block_dedup_key(b.app, b.start_utc)
+                for b in env["created"]
+                if b.start_utc >= start_utc
+            }
+
+    def make_aw(*a, **k):
+        return ClippingAW(env["events"], env["clock"], env["afk"])
+
+    monkeypatch.setattr(cli, "ActivityWatchClient", make_aw)
+    monkeypatch.setattr(cli, "NotionTimeLogClient", FakeNotion)
+    monkeypatch.setattr(cli, "_utcnow", lambda: env["clock"]["now"])
+    return env
+
+
+T0 = datetime(2026, 9, 27, 9, 0, tzinfo=UTC)
+
+
+def _sync_at(env, now):
+    env["clock"]["now"] = now
+    sync()
+
+
+def test_long_block_across_syncs_is_written_once_with_full_duration(clipping_env):
+    """Review #1: a block that outlives the 30-min rewind used to come back
+    clipped to the query start → new signature → a second, overlapping row
+    every sync. It must land exactly once, whole, after it has ended."""
+    env = clipping_env
+    env["events"] += [
+        ("Code", "a.py", T0, T0 + timedelta(minutes=60)),
+        ("Slack", "general", T0 + timedelta(minutes=60), T0 + timedelta(minutes=65)),
+    ]
+    # First run backfills; then ordinary incremental syncs every 20 minutes.
+    for minutes in (20, 40, 80, 100, 120):
+        _sync_at(env, T0 + timedelta(minutes=minutes))
+
+    code = [b for b in env["created"] if b.app == "Code"]
+    assert len(code) == 1, [(b.start_utc, b.end_utc) for b in code]
+    assert code[0].start_utc == T0
+    assert code[0].active_minutes() == 60
+
+
+def test_block_still_growing_at_sync_time_is_deferred(clipping_env):
+    """A block whose end is within merge_gap of now may still be extended; it
+    must not be written yet (else it's stored short and never corrected)."""
+    env = clipping_env
+    env["events"].append(("Code", "a.py", T0, T0 + timedelta(hours=5)))
+    _sync_at(env, T0 + timedelta(minutes=20))
+    assert env["created"] == []
+
+
+def test_since_backfill_does_not_write_block_clipped_at_since(clipping_env):
+    """Review #6: --since used to write the boundary block with start=since (the
+    server's clip), which neither matches the row already in Notion nor any
+    later sync's signature → duplicate. A block that truly starts before
+    --since is out of range; one starting after it is written whole."""
+    env = clipping_env
+    env["events"] += [
+        ("Code", "a.py", T0, T0 + timedelta(minutes=30)),
+        ("Slack", "general", T0 + timedelta(minutes=30), T0 + timedelta(minutes=40)),
+        ("Mail", "inbox", T0 + timedelta(minutes=40), T0 + timedelta(minutes=45)),
+    ]
+    env["clock"]["now"] = T0 + timedelta(hours=2)
+    sync(since=(T0 + timedelta(minutes=10)).isoformat())
+    assert [(b.app, b.start_utc) for b in env["created"]] == [
+        ("Slack", T0 + timedelta(minutes=30)),
+        ("Mail", T0 + timedelta(minutes=40)),
+    ]
+
+
+def test_window_fully_afk_so_far_still_holds_the_fetch_back(clipping_env):
+    """An event entirely covered by AFK has no block yet, so no block marks it
+    open — but it gains one when the user comes back to that same window. Its
+    start must still hold pending_since back, or later syncs only ever see it
+    clipped and it is never written."""
+    env = clipping_env
+    env["events"] += [
+        ("Code", "a.py", T0, T0 + timedelta(minutes=130)),
+        ("Slack", "general", T0 + timedelta(minutes=130), T0 + timedelta(minutes=135)),
+    ]
+    env["afk"].append((T0, T0 + timedelta(minutes=100)))
+    for minutes in (40, 80, 120, 160):
+        _sync_at(env, T0 + timedelta(minutes=minutes))
+
+    code = [b for b in env["created"] if b.app == "Code"]
+    assert [(b.start_utc, b.active_minutes()) for b in code] == [(T0, 30)]
+
+
+def _http_error(status: int, code: str) -> HTTPResponseError:
+    return HTTPResponseError(code, status, f"{status} {code}", httpx.Headers(), "")
+
+
+def _two_blocks(env):
+    # A clean sync first, so the ones under test are incremental, not first-run
+    # backfills (which consult Notion regardless).
+    _sync_at(env, T0 - timedelta(minutes=5))
+    env["events"] += [
+        ("Code", "a.py", T0, T0 + timedelta(minutes=10)),
+        ("Slack", "general", T0 + timedelta(minutes=10), T0 + timedelta(minutes=20)),
+    ]
+
+
+def test_validation_error_skips_block_instead_of_jamming_sync(clipping_env):
+    """Review #2: a 400 for one block is permanent — retrying it can't help.
+    It used to exit before advancing last_sync, so every later sync hit the
+    same wall and nothing after it was ever written."""
+    env = clipping_env
+    _two_blocks(env)
+    env["fail"]["Code"] = _http_error(400, "validation_error")
+    _sync_at(env, T0 + timedelta(minutes=40))
+    assert [b.app for b in env["created"]] == ["Slack"]
+
+    _sync_at(env, T0 + timedelta(minutes=60))
+    assert env["attempts"] == ["Code", "Slack"], "the bad block is not retried forever"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [_http_error(401, "unauthorized"), _http_error(503, "service_unavailable")],
+    ids=["auth", "server"],
+)
+def test_non_block_error_stops_sync_and_retries_later(clipping_env, exc):
+    """Auth/config/server errors would fail every block: skipping them would
+    drop all data. Stop without advancing, retry next sync."""
+    env = clipping_env
+    _two_blocks(env)
+    env["fail"]["Code"] = exc
+    with pytest.raises(SystemExit):
+        _sync_at(env, T0 + timedelta(minutes=40))
+    _sync_at(env, T0 + timedelta(minutes=60))
+    assert sorted(b.app for b in env["created"]) == ["Code", "Slack"]
+
+
+def test_lost_response_after_successful_post_is_not_duplicated(clipping_env):
+    """Review #5: a timeout after Notion already created the page left no
+    trace in state, so the retry created it again. The next sync must check
+    Notion for what the failed one may have written."""
+    env = clipping_env
+    _two_blocks(env)
+    env["lost_response"].add("Code")
+    with pytest.raises(SystemExit):
+        _sync_at(env, T0 + timedelta(minutes=40))
+    _sync_at(env, T0 + timedelta(minutes=60))
+    assert sorted(b.app for b in env["created"]) == ["Code", "Slack"]
+    assert env["keys_queried"], "retry consulted Notion"

@@ -6,18 +6,20 @@ before the filter existed. This script queries Notion directly (not the
 notion2git cache, which is 7-day-windowed) and archives matching pages.
 
 Idempotent — re-running finds 0 entries (already archived).
+
+Run with the project venv, which has notion_client:
+    .venv/bin/python scripts/purge_excluded.py
 """
-import os
+
 import sys
 import time
 import tomllib
 from pathlib import Path
 
+from notion_client import Client
+
 CONFIG = Path.home() / ".config/aw-notion/config.toml"
 cfg = tomllib.loads(CONFIG.read_text())
-
-sys.path.insert(0, str(Path.home() / "code/aw-notion/.venv/lib/python3.11/site-packages"))
-from notion_client import Client
 
 client = Client(auth=cfg["notion"]["token"], notion_version="2022-06-28")
 db = cfg["notion"]["timelog_db"]

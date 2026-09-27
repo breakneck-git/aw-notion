@@ -1,5 +1,8 @@
 import logging
 import subprocess
+from datetime import UTC, datetime
+
+import requests
 
 from aw_notion import health
 
@@ -25,6 +28,8 @@ class FakeAW:
         return self._current[0]
 
     def buckets(self):
+        if isinstance(self._current[1], Exception):
+            raise self._current[1]
         return self._current[1]
 
 
@@ -32,14 +37,25 @@ FRESH = _buckets("2026-09-27T01:00:00+00:00", "2026-09-27T00:59:59+00:00")
 STALE = _buckets("2026-09-27T01:00:00+00:00", "2026-09-25T02:50:49+00:00")
 
 
-def _run(snapshots, state_path):
+NOW = datetime(2026, 9, 27, 1, 0, 30, tzinfo=UTC)
+# Both watchers stopped at the same moment an hour ago: zero lag between them.
+BOTH_STALE = _buckets("2026-09-27T00:00:00+00:00", "2026-09-27T00:00:00+00:00")
+
+
+def _run(snapshots, state_path, delivered=True):
     sleeps: list[float] = []
     alerts: list[str] = []
+
+    def alert(message):
+        alerts.append(message)
+        return delivered
+
     ok = health.check_health(
         FakeAW(snapshots),
         sleep=sleeps.append,
-        alert=alerts.append,
+        alert=alert,
         state_path=state_path,
+        now=lambda: NOW,
     )
     return ok, sleeps, alerts
 
@@ -172,3 +188,97 @@ def test_send_alert_never_raises(monkeypatch):
 
     monkeypatch.setattr(health.subprocess, "run", boom)
     health.send_alert("m")
+
+
+def test_buckets_request_failing_alerts_instead_of_crashing(tmp_path):
+    """Review #3: /info answers but /buckets raises — used to propagate out of
+    check_health and kill the sync with no alert at all."""
+    boom = requests.HTTPError("500 Server Error")
+    ok, _, alerts = _run([(True, boom), (True, boom)], tmp_path / "a")
+    assert not ok, "sync can't run without the bucket list"
+    assert len(alerts) == 1 and "buckets" in alerts[0]
+
+
+def test_both_watchers_dead_alerts_even_with_zero_lag(tmp_path):
+    """Review #4: when afk and window die together their lag is ~0, so the
+    relative check stays silent. Newest heartbeat of either vs the wall clock
+    catches it (afk alone can't be used: it stalls 11–34 min by itself)."""
+    ok, _, alerts = _run([(True, BOTH_STALE), (True, BOTH_STALE)], tmp_path / "a")
+    assert ok, "stale watchers alert but don't block the sync"
+    assert len(alerts) == 1 and "watcher" in alerts[0]
+
+
+def test_fresh_window_with_stalled_afk_is_healthy(tmp_path):
+    b = _buckets("2026-09-27T00:30:00+00:00", "2026-09-27T01:00:29+00:00")
+    ok, sleeps, alerts = _run([(True, b)], tmp_path / "a")
+    assert ok and sleeps == [] and alerts == []
+
+
+def test_recheck_finding_a_different_problem_does_not_alert(tmp_path):
+    """Review #7: at login the first check sees the server down, the recheck a
+    window bucket still stale from before logout — neither is confirmed, so
+    no alert (and no state change) this round."""
+    st = tmp_path / "a"
+    ok, _, alerts = _run([(False, None), (True, STALE)], st)
+    assert ok and alerts == []
+    assert not st.exists()
+
+
+def test_undelivered_alert_is_retried_next_sync(tmp_path):
+    """Review #8: an alert that reached no channel must not be recorded as
+    sent, or the problem is never reported."""
+    st = tmp_path / "a"
+    _, _, first = _run([(True, STALE), (True, STALE)], st, delivered=False)
+    _, _, second = _run([(True, STALE), (True, STALE)], st)
+    assert len(first) == 1 and len(second) == 1
+
+
+def test_corrupt_alert_state_is_treated_as_healthy(tmp_path):
+    st = tmp_path / "a"
+    st.write_bytes(b"\xff\xfe\x00garbage")
+    ok, _, alerts = _run([(True, STALE), (True, STALE)], st)
+    assert ok and len(alerts) == 1
+
+
+def test_alert_state_write_is_atomic(tmp_path, monkeypatch):
+    st = tmp_path / "a"
+    _run([(True, STALE), (True, STALE)], st)
+    before = st.read_text(encoding="utf-8")
+
+    def fail(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(health.os, "replace", fail)
+    _run([(True, FRESH)], st)  # recovery tries to overwrite the state
+    assert st.read_text(encoding="utf-8") == before
+    assert list(tmp_path.iterdir()) == [st], "no temp file left behind"
+
+
+def test_malformed_or_naive_bucket_timestamps_do_not_crash(tmp_path):
+    b = {
+        "aw-watcher-afk_h": {"last_updated": "2026-09-27T01:00:00"},  # naive → UTC
+        "aw-watcher-window_h": {"last_updated": "not a date"},
+        "aw-watcher-window_h2": {"last_updated": "2026-09-27T01:00:00+00:00"},
+    }
+    ok, sleeps, alerts = _run([(True, b)], tmp_path / "a")
+    assert ok and sleeps == [] and alerts == []
+
+
+def test_send_alert_reports_delivery(monkeypatch):
+    monkeypatch.setattr(health.shutil, "which", lambda name, path=None: f"/bin/{name}")
+    monkeypatch.setattr(
+        health.subprocess, "run", lambda args, **k: subprocess.CompletedProcess(args, 1)
+    )
+    assert health.send_alert("m") is False
+    monkeypatch.setattr(
+        health.subprocess,
+        "run",
+        lambda args, **k: subprocess.CompletedProcess(args, 1 if "owner-alert" in args[0] else 0),
+    )
+    assert health.send_alert("m") is True
+
+
+def test_stalled_afk_without_window_bucket_is_not_an_alert(tmp_path):
+    b = _buckets("2026-09-27T00:30:00+00:00", None)
+    ok, sleeps, alerts = _run([(True, b)], tmp_path / "a")
+    assert ok and sleeps == [] and alerts == []

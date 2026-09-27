@@ -669,3 +669,28 @@ class TestTitleMatchScore:
     def test_token_jaccard_partial(self):
         s = _title_match_score("alpha beta", "beta gamma")
         assert 0.0 < s < 1.0
+
+
+@responses.activate
+def test_null_app_and_title_do_not_crash():
+    """Review #9: for an event carrying `"app": null`, `.get("app", "Unknown")`
+    returns None (the key is present) and `.casefold()` raised AttributeError,
+    killing the whole sync."""
+    responses.add(responses.GET, f"{BASE}/buckets", json=BUCKETS)
+    responses.add(
+        responses.GET,
+        f"{BASE}/buckets/aw-watcher-window_testhost/events",
+        json=[
+            {
+                "id": 1,
+                "timestamp": "2026-04-11T10:00:00.000000+00:00",
+                "duration": 300.0,
+                "data": {"app": None, "title": None},
+            }
+        ],
+    )
+    responses.add(responses.GET, f"{BASE}/buckets/aw-watcher-afk_testhost/events", json=[])
+    start = datetime(2026, 4, 11, 10, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 11, 11, 0, tzinfo=UTC)
+    window_events, _ = ActivityWatchClient().get_all_events(start, end)
+    assert (window_events[0].app, window_events[0].title) == ("Unknown", "")

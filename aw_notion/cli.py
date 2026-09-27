@@ -6,7 +6,10 @@ import sys
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NoReturn
 from zoneinfo import ZoneInfo
+
+from notion_client.errors import HTTPResponseError
 
 from .activitywatch import ActivityWatchClient
 from .blocks import compute_focus_blocks
@@ -24,6 +27,14 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 LOCK_PATH = Path.home() / ".config" / "aw-notion" / "sync.lock"
+
+# Incremental syncs re-read this far before the last sync (and before any block
+# still open then), so late-arriving events are picked up; state dedup makes the
+# overlap free.
+REWIND = timedelta(minutes=30)
+# Slack between the fetch start and merge_gap before the commit range, so a
+# boundary event exactly merge_gap away can't be merged in one run and not another.
+FETCH_MARGIN = timedelta(minutes=1)
 
 
 @contextmanager
@@ -88,6 +99,10 @@ def _log_blocks_debug(blocks, ax_intervals, state_sigs) -> None:
     log.info("=== END DEBUG ===")
 
 
+def _utcnow() -> datetime:
+    return datetime.now(tz=UTC)
+
+
 def _parse_since(since: str) -> datetime:
     dt = datetime.fromisoformat(since)
     if dt.tzinfo is None:
@@ -105,7 +120,8 @@ def _filter_excluded(blocks, sync_cfg):
     Returns (kept_blocks, excluded_count). Matching is case-insensitive:
     - `exclude_apps`: exact match against block.app
     - `exclude_url_substrings`: substring match against block.url
-    - `exclude_title_substrings`: substring match against block.title
+    - `exclude_title_substrings`: substring match against block.title and
+      block.note (the ax context, e.g. a chat name, is just as private)
     """
     if not (
         sync_cfg.exclude_apps
@@ -129,13 +145,18 @@ def _filter_excluded(blocks, sync_cfg):
             if any(s in u for s in excluded_url_subs):
                 excluded += 1
                 continue
-        if b.title and excluded_title_subs:
-            t = b.title.lower()
-            if any(s in t for s in excluded_title_subs):
+        if excluded_title_subs:
+            texts = [t.lower() for t in (b.title, b.note) if t]
+            if any(s in t for t in texts for s in excluded_title_subs):
                 excluded += 1
                 continue
         kept.append(b)
     return kept, excluded
+
+
+def _log_alert_only(message: str) -> bool:
+    log.warning("DRY RUN would alert: %s", message)
+    return False
 
 
 def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
@@ -143,37 +164,71 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
     state = State.load(STATE_PATH)
 
     aw = ActivityWatchClient(cfg.activitywatch.base_url)
-    # Alerts (ERROR + desktop notification) on a down server or a dead window
-    # watcher — both otherwise just yield "0 focus blocks" forever, silently.
-    if not check_health(aw):
-        log.warning("ActivityWatch is not running, skipping sync")
+    # Alerts (ERROR + Telegram/desktop) on a down server or dead watchers —
+    # both otherwise just yield "0 focus blocks" forever, silently. A dry run
+    # only logs them (and, as undelivered, doesn't record them as sent).
+    health_kwargs = {"alert": _log_alert_only} if dry_run else {}
+    if not check_health(aw, **health_kwargs):
+        log.warning("ActivityWatch unavailable, skipping sync")
         return
 
-    now = datetime.now(tz=UTC)
+    now = _utcnow()
 
+    # Blocks are written only when they are *settled*: whole (start inside the
+    # commit range) and finished (ended over merge_gap ago, so no later event
+    # can extend them). aw-server clips an event overlapping the query start to
+    # that start, so a block reaching back past the fetch start comes back with
+    # a fake start → a new signature → a duplicate row every sync. Fetching
+    # merge_gap (+margin) before commit_from means any block starting at or
+    # after commit_from has all its events in view and its true start.
     if since is not None:
-        start = _parse_since(since)
-        log.info("Override start to %s", start.isoformat())
+        commit_from = _parse_since(since)
+        log.info("Override start to %s", commit_from.isoformat())
         backfill = True
     elif state.last_sync is None:
-        start = now - timedelta(days=cfg.sync.initial_sync_days)
+        commit_from = now - timedelta(days=cfg.sync.initial_sync_days)
         log.info("First run: syncing last %d days", cfg.sync.initial_sync_days)
         backfill = True
     else:
-        start = state.last_sync - timedelta(minutes=30)
-        log.info("Incremental sync from %s", start.isoformat())
+        anchor = state.last_sync
+        if state.pending_since is not None and state.pending_since < anchor:
+            anchor = state.pending_since
+        commit_from = anchor - REWIND
+        log.info("Incremental sync from %s", commit_from.isoformat())
         backfill = False
+
+    merge_gap = timedelta(seconds=cfg.activitywatch.merge_gap_sec)
+    start = commit_from - merge_gap - FETCH_MARGIN
+    settled_before = now - merge_gap
 
     window_events, afk_events = aw.get_all_events(
         start, now, browser_apps=cfg.activitywatch.browser_apps
     )
-    blocks = compute_focus_blocks(
+    # min_duration applied below, after the open/settled split: a block too
+    # short *so far* is still open and must hold pending_since back.
+    all_blocks = compute_focus_blocks(
         window_events,
         afk_events,
         afk_threshold_sec=cfg.activitywatch.afk_threshold_min * 60,
         merge_gap_sec=cfg.activitywatch.merge_gap_sec,
-        min_duration_sec=cfg.activitywatch.min_block_duration_sec,
+        min_duration_sec=0,
     )
+    # Open = may still grow. Window events are included too: one fully covered
+    # by AFK so far has no block yet, but gains one when the user returns.
+    open_starts = [b.start_utc for b in all_blocks if b.end_utc > settled_before]
+    open_starts += [
+        e.timestamp
+        for e in window_events
+        if e.timestamp + timedelta(seconds=e.duration) > settled_before
+    ]
+    pending_since = min(open_starts, default=None)
+    blocks = [
+        b
+        for b in all_blocks
+        if b.start_utc >= commit_from
+        and b.end_utc <= settled_before
+        and b.active_seconds >= cfg.activitywatch.min_block_duration_sec
+    ]
     log.info("Found %d focus blocks in range", len(blocks))
 
     blocks, excluded_count = _filter_excluded(blocks, cfg.sync)
@@ -205,10 +260,11 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
     # gate creation on them too. Read-only, so we run it even in dry-run (for an
     # honest "would create" count). Skipped on plain incremental syncs — state
     # dedup covers the 30-min rewind and we avoid a query every 15 minutes.
+    # Same query after a failed write that may have landed anyway (#5).
     existing_keys: set[tuple[str, str]] = set()
-    if backfill:
-        existing_keys = notion.fetch_existing_keys(start)
-        log.info("Backfill dedup: %d existing Notion entries in window", len(existing_keys))
+    if backfill or state.verify_notion:
+        existing_keys = notion.fetch_existing_keys(commit_from)
+        log.info("Notion dedup: %d existing entries in window", len(existing_keys))
 
     tz = ZoneInfo(cfg.timezone)
     new_count = 0
@@ -233,20 +289,44 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
 
         try:
             page_id = notion.create_entry(block, tz)
+        except HTTPResponseError as exc:
+            if exc.status != 400:
+                _abort_sync(state, block, exc)
+            # 400 = Notion rejected this block's content; a retry gets the same
+            # answer, so stopping here would wedge every later sync behind it.
+            # Record it as handled and move on.
+            log.error("Notion rejected entry for '%s', skipping it: %s", block.title, exc)
             state.notion_entries[sig] = {
-                "page_id": page_id,
+                "page_id": None,
                 "created_at": datetime.now(tz=UTC).isoformat(),
+                "error": str(exc)[:200],
             }
-            new_count += 1
+            continue
         except Exception as exc:
-            log.error("Failed to create Notion entry for '%s': %s", block.title, exc)
-            state.save(STATE_PATH)
-            sys.exit(1)
+            _abort_sync(state, block, exc)
+        state.notion_entries[sig] = {
+            "page_id": page_id,
+            "created_at": datetime.now(tz=UTC).isoformat(),
+        }
+        new_count += 1
 
     if not dry_run:
         state.last_sync = now
+        state.pending_since = pending_since
+        state.verify_notion = False
         state.save(STATE_PATH)
     log.info("Synced %d new entries%s", new_count, " (dry-run)" if dry_run else "")
+
+
+def _abort_sync(state: State, block, exc: Exception) -> NoReturn:
+    """Stop without advancing last_sync, so the next sync retries. Auth/config
+    and server errors would fail every block alike — skipping would drop them
+    all. The write may also have landed despite the error (timeout, dropped
+    connection, 5xx), so the retry checks Notion first."""
+    log.error("Failed to create Notion entry for '%s': %s", block.title, exc)
+    state.verify_notion = True
+    state.save(STATE_PATH)
+    sys.exit(1)
 
 
 def main() -> None:

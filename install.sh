@@ -9,6 +9,12 @@ CONFIG_TEMPLATE="$INSTALL_DIR/config.toml.example"
 
 OS="$(uname -s)"
 
+# Paths are spliced into sed replacements (and, for the plists, into XML), so
+# escape what either would interpret: sed's \ & and the | delimiter; XML's & < >.
+sed_escape() { printf '%s' "$1" | sed -e 's/[\\|&]/\\&/g'; }
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+plist_value() { sed_escape "$(xml_escape "$1")"; }
+
 PYTHON_BIN=""
 for candidate in python3.11 python3.12 python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -55,8 +61,8 @@ if [ "$OS" = "Darwin" ]; then
 
     echo "Installing launchd service (macOS)..."
     mkdir -p "$LOG_DIR"
-    sed -e "s|BIN_PATH|$VENV_DIR/bin/aw-notion|g" \
-        -e "s|LOG_DIR|$LOG_DIR|g" \
+    sed -e "s|BIN_PATH|$(plist_value "$VENV_DIR/bin/aw-notion")|g" \
+        -e "s|LOG_DIR|$(plist_value "$LOG_DIR")|g" \
         "$PLIST_SRC" > "$PLIST_DST"
 
     launchctl unload "$PLIST_DST" 2>/dev/null || true
@@ -73,19 +79,22 @@ if [ "$OS" = "Darwin" ]; then
     if [ -x "$AW_WIN_BIN" ]; then
         KA_DST="$HOME/Library/LaunchAgents/com.aw-watcher-window.keepalive.plist"
         echo "Supervising aw-watcher-window with launchd KeepAlive..."
-        sed -e "s|BIN_PATH|$AW_WIN_BIN|g" \
-            -e "s|LOG_DIR|$LOG_DIR|g" \
+        sed -e "s|BIN_PATH|$(plist_value "$AW_WIN_BIN")|g" \
+            -e "s|LOG_DIR|$(plist_value "$LOG_DIR")|g" \
             "$INSTALL_DIR/com.aw-watcher-window.keepalive.plist" > "$KA_DST"
 
         AW_QT_TOML="$HOME/Library/Application Support/activitywatch/aw-qt/aw-qt.toml"
         if [ -f "$AW_QT_TOML" ]; then
-            cp "$AW_QT_TOML" "$AW_QT_TOML.aw-notion.bak"
+            # Back up the user's original once — a re-run must not overwrite it
+            # with the already-edited copy. The edit itself is idempotent.
+            [ -f "$AW_QT_TOML.aw-notion.bak" ] || cp "$AW_QT_TOML" "$AW_QT_TOML.aw-notion.bak"
             awk '
               /^\[aw-qt\][[:space:]]*$/ { print; print "autostart_modules = [\"aw-server\", \"aw-watcher-afk\"]"; inq=1; next }
               /^\[/ { inq=0 }
               inq && /^[[:space:]]*#?[[:space:]]*autostart_modules/ { next }
               { print }
-            ' "$AW_QT_TOML.aw-notion.bak" > "$AW_QT_TOML"
+            ' "$AW_QT_TOML" > "$AW_QT_TOML.aw-notion.tmp"
+            mv "$AW_QT_TOML.aw-notion.tmp" "$AW_QT_TOML"
         fi
 
         # Restart ActivityWatch so aw-qt re-reads config (no longer launches
@@ -114,7 +123,7 @@ elif [ "$OS" = "Linux" ]; then
 
     echo "Installing systemd user service (Linux)..."
     mkdir -p "$SYSTEMD_DIR"
-    sed -e "s|BIN_PATH|$VENV_DIR/bin/aw-notion|g" \
+    sed -e "s|BIN_PATH|$(sed_escape "$VENV_DIR/bin/aw-notion")|g" \
         "$SERVICE_SRC" > "$SYSTEMD_DIR/aw-notion.service"
     cp "$TIMER_SRC" "$SYSTEMD_DIR/aw-notion.timer"
 

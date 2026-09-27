@@ -235,8 +235,9 @@ class ActivityWatchClient:
                 ts = datetime.fromisoformat(e["timestamp"]).astimezone(UTC)
                 duration = float(e["duration"])
                 win_end = ts + timedelta(seconds=duration)
-                app = e["data"].get("app", "Unknown")
-                title = e["data"].get("title", "")
+                # `or`, not a .get default: a present-but-null key yields None.
+                app = e["data"].get("app") or "Unknown"
+                title = e["data"].get("title") or ""
                 url = None
                 if app.casefold() in browser_set:
                     url = _find_url_by_overlap(web_intervals, ts, win_end, title)

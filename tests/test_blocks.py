@@ -1,6 +1,12 @@
 from datetime import UTC, datetime, timedelta
 
-from aw_notion.blocks import AFKEvent, AWEvent, compute_focus_blocks
+from aw_notion.blocks import (
+    AFKEvent,
+    AWEvent,
+    FocusBlock,
+    cluster_blocks,
+    compute_focus_blocks,
+)
 
 
 def dt(offset_sec: float) -> datetime:
@@ -226,3 +232,85 @@ def test_duplicate_overlapping_afk_events_are_counted_once():
     ] + [AFKEvent(timestamp=base + timedelta(minutes=25), duration=300.0, status="afk")]
     blocks = compute_focus_blocks(window, afk)
     assert [round(b.active_seconds) for b in blocks] == [1200]
+
+
+# --- cluster_blocks: glue pieces of one activity split by short interruptions ---
+
+
+def blk(offset_sec, active, title, app="Claude", url=None, note=None, wall=None):
+    return FocusBlock(
+        app=app,
+        title=title,
+        start_utc=dt(offset_sec),
+        end_utc=dt(offset_sec + (wall if wall is not None else active)),
+        active_seconds=active,
+        url=url,
+        note=note,
+    )
+
+
+def test_cluster_glues_same_title_across_interruption():
+    """Claude 3 min → Telegram → Claude 3 min is one 6-min activity; each piece
+    alone would fall under the minimum and be dropped."""
+    blocks = [blk(0, 180, "Claude"), blk(240, 180, "Claude")]
+    [c] = cluster_blocks(blocks, gap_sec=1800)
+    assert c.start_utc == dt(0)
+    assert c.end_utc == dt(420)
+    assert c.active_seconds == 360
+    assert c.title == "Claude"
+
+
+def test_cluster_splits_when_gap_exceeds_limit():
+    blocks = [blk(0, 180, "Claude"), blk(180 + 1801, 180, "Claude")]
+    assert len(cluster_blocks(blocks, gap_sec=1800)) == 2
+
+
+def test_cluster_gap_is_measured_from_latest_end():
+    blocks = [blk(0, 180, "a"), blk(180 + 1800, 180, "a")]
+    assert len(cluster_blocks(blocks, gap_sec=1800)) == 1
+
+
+def test_cluster_keys_web_pages_by_url_not_title():
+    """Same key as the notion2git Pipedream merge: a page's window title changes
+    (unread counters, "playing audio"), its URL doesn't."""
+    blocks = [
+        blk(0, 120, "(1) Video – Comet", app="Comet", url="https://y.t/v1"),
+        blk(200, 120, "(2) Video – Comet", app="Comet", url="https://y.t/v1"),
+    ]
+    [c] = cluster_blocks(blocks, gap_sec=1800)
+    assert c.title == "(1) Video – Comet"
+    assert c.url == "https://y.t/v1"
+    assert c.active_seconds == 240
+
+
+def test_cluster_does_not_glue_different_urls_or_notes():
+    blocks = [
+        blk(0, 120, "t", app="Comet", url="https://a"),
+        blk(200, 120, "t", app="Comet", url="https://b"),
+        blk(400, 120, "Claude", note="chat 1"),
+        blk(600, 120, "Claude", note="chat 2"),
+    ]
+    assert len(cluster_blocks(blocks, gap_sec=1800)) == 4
+
+
+def test_cluster_placeholder_url_falls_back_to_title_key():
+    """chrome://newtab etc. alias unrelated activities — key on title instead."""
+    blocks = [
+        blk(0, 120, "A", app="Comet", url="chrome://newtab/"),
+        blk(200, 120, "B", app="Comet", url="chrome://newtab/"),
+    ]
+    assert len(cluster_blocks(blocks, gap_sec=1800)) == 2
+
+
+def test_cluster_interleaved_activities_sorted_by_start():
+    blocks = [blk(0, 120, "a"), blk(150, 120, "b"), blk(300, 120, "a")]
+    out = cluster_blocks(blocks, gap_sec=1800)
+    assert [(c.title, c.start_utc, c.active_seconds) for c in out] == [
+        ("a", dt(0), 240),
+        ("b", dt(150), 120),
+    ]
+
+
+def test_cluster_gap_zero_keeps_blocks_as_is():
+    blocks = [blk(0, 180, "Claude"), blk(240, 180, "Claude")]
+    assert cluster_blocks(blocks, gap_sec=0) == blocks

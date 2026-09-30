@@ -118,7 +118,7 @@ duration_minutes = "Время"
 entry = "Запись"
 ```
 
-Other tunables under `[activitywatch]`: `afk_threshold_min`, `merge_gap_sec`, `min_block_duration_sec`. Under `[sync]`: `initial_sync_days`.
+Other tunables under `[activitywatch]`: `afk_threshold_min`, `merge_gap_sec`, `min_block_duration_sec`, `cluster_gap_sec` (see `config.toml.example`). Under `[sync]`: `initial_sync_days`.
 
 ## Note enrichment
 

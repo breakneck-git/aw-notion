@@ -44,6 +44,10 @@ class ActivityWatchConfig:
     afk_threshold_min: int = 10
     min_block_duration_sec: int = 120
     merge_gap_sec: int = 180
+    # Pieces of one activity (same title, or same URL for web pages) within
+    # this many seconds are glued before min_block_duration_sec is applied.
+    # A row is written only after this long without the activity. 0 = off.
+    cluster_gap_sec: int = 1800
     browser_apps: list[str] = field(default_factory=lambda: list(DEFAULT_BROWSER_APPS))
 
 

@@ -1,5 +1,5 @@
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -153,3 +153,44 @@ def compute_focus_blocks(
 
     flush(cur)
     return blocks
+
+
+# URLs that alias unrelated activities (new tab, blank page) — keyed by title.
+_PLACEHOLDER_URLS = ("", "/")
+_PLACEHOLDER_URL_PREFIXES = ("chrome://", "about:", "edge://", "brave://", "comet://")
+
+
+def _activity_key(b: FocusBlock) -> tuple[str, str, str, str]:
+    """Same identity as the notion2git Pipedream merge (`_timelog_group_key`):
+    a web page by URL (its window title changes — counters, "playing audio"),
+    anything else by (title, app); note always, so different chats stay apart."""
+    url = (b.url or "").strip()
+    note = b.note or ""
+    if url not in _PLACEHOLDER_URLS and not url.startswith(_PLACEHOLDER_URL_PREFIXES):
+        return ("", note, "", url)
+    return (b.title, note, b.app, "")
+
+
+def cluster_blocks(blocks: list[FocusBlock], *, gap_sec: int) -> list[FocusBlock]:
+    """Glue blocks of one activity split by short interruptions (a Telegram
+    reply, a glance at another tab) into one, so the minimum-duration cut sees
+    the whole activity instead of dropping every piece. Pieces join while the
+    next starts within `gap_sec` of the latest end so far. The result spans
+    first start → latest end and sums active time; title/app/url come from the
+    first piece. `gap_sec <= 0` returns the blocks unchanged."""
+    if gap_sec <= 0:
+        return blocks
+    gap = timedelta(seconds=gap_sec)
+    open_by_key: dict[tuple[str, str, str, str], FocusBlock] = {}
+    out: list[FocusBlock] = []
+    for b in sorted(blocks, key=lambda b: b.start_utc):
+        key = _activity_key(b)
+        cur = open_by_key.get(key)
+        if cur is not None and b.start_utc - cur.end_utc <= gap:
+            cur.end_utc = max(cur.end_utc, b.end_utc)
+            cur.active_seconds += b.active_seconds
+            continue
+        cur = replace(b)
+        open_by_key[key] = cur
+        out.append(cur)
+    return out

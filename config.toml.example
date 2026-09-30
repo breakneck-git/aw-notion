@@ -35,10 +35,16 @@ timelog_db = "YOUR_NOTION_DATABASE_ID"
 base_url = "http://localhost:5600"
 # Gap longer than this (in minutes) between events forces a new focus block.
 afk_threshold_min = 10
-# Drop blocks shorter than this (active seconds, not wall time).
-min_block_duration_sec = 120
+# Drop rows shorter than this (active seconds, not wall time), applied after
+# cluster_gap_sec has glued the pieces of one activity together.
+min_block_duration_sec = 300
 # Same-app/title gap shorter than this is merged into one block.
 merge_gap_sec = 180
+# Pieces of one activity (same title, or same URL for web pages, same note)
+# interrupted for less than this are glued into one row, so a chat answered
+# between Telegram replies isn't dropped piece by piece. A row is written only
+# after the activity has been quiet this long. 0 = off.
+cluster_gap_sec = 1800
 # Apps that get URLs attached from aw-watcher-web (window-watcher app names,
 # case-insensitive). The default covers common chromium-based browsers.
 # Extend if your browser is missing (e.g. "Sidekick", "Wavebox", "Orion").

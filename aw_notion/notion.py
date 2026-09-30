@@ -19,7 +19,10 @@ def block_dedup_key(app: str, start_utc: datetime) -> tuple[str, str]:
     - (app, minute) is collision-free for the entries we create. Window events
       never overlap (one focused window at a time) and a *kept* block spans at
       least `min_duration_sec` (≥2 min wall), so two kept blocks of the same
-      app always start ≥2 min apart — never in the same minute.
+      app almost always start in different minutes. Exception: a row is a
+      cluster of pieces (`cluster_blocks`) and its first piece may be short, so
+      two rows of one app with different titles can start in the same minute;
+      only a backfill/verify pass could then skip the second. Rare, accepted.
     - Keying on title would *introduce* a failure: the Pipedream merge rewrites
       a merged entry's Entry/title, so a re-synced block's recomputed title can
       diverge from what Notion stores, and the entry would be recreated as a

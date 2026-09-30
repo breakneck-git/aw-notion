@@ -44,7 +44,7 @@ def test_acquire_lock_raises_when_held(tmp_path):
 def sync_env(tmp_path, monkeypatch):
     fake_cfg = Config(
         notion=NotionConfig(token="t", timelog_db="db"),
-        activitywatch=ActivityWatchConfig(),
+        activitywatch=ActivityWatchConfig(cluster_gap_sec=0),
         sync=SyncConfig(),
         timezone="UTC",
     )
@@ -92,6 +92,7 @@ def sync_env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ActivityWatchClient", FakeAW)
     monkeypatch.setattr(cli, "NotionTimeLogClient", FakeNotion)
     captured["tmp_path"] = tmp_path
+    captured["cfg"] = fake_cfg
     return captured
 
 
@@ -219,7 +220,7 @@ def test_sync_runs_git_fallback_for_path_like_titles(tmp_path, monkeypatch):
     """
     fake_cfg = Config(
         notion=NotionConfig(token="t", timelog_db="db"),
-        activitywatch=ActivityWatchConfig(),
+        activitywatch=ActivityWatchConfig(cluster_gap_sec=0),
         sync=SyncConfig(),
         timezone="UTC",
     )
@@ -292,7 +293,7 @@ def test_sync_git_fallback_does_not_override_existing_note(tmp_path, monkeypatch
     """
     fake_cfg = Config(
         notion=NotionConfig(token="t", timelog_db="db"),
-        activitywatch=ActivityWatchConfig(),
+        activitywatch=ActivityWatchConfig(cluster_gap_sec=0),
         sync=SyncConfig(),
         timezone="UTC",
     )
@@ -507,6 +508,7 @@ def clipping_env(tmp_path, monkeypatch):
         "lost_response": set(),
         "attempts": [],
         "keys_queried": [],
+        "cfg": cfg,
     }
 
     class FakeNotion:
@@ -635,10 +637,10 @@ def test_validation_error_skips_block_instead_of_jamming_sync(clipping_env):
     env = clipping_env
     _two_blocks(env)
     env["fail"]["Code"] = _http_error(400, "validation_error")
-    _sync_at(env, T0 + timedelta(minutes=40))
+    _sync_at(env, T0 + timedelta(minutes=55))
     assert [b.app for b in env["created"]] == ["Slack"]
 
-    _sync_at(env, T0 + timedelta(minutes=60))
+    _sync_at(env, T0 + timedelta(minutes=75))
     assert env["attempts"] == ["Code", "Slack"], "the bad block is not retried forever"
 
 
@@ -654,8 +656,8 @@ def test_non_block_error_stops_sync_and_retries_later(clipping_env, exc):
     _two_blocks(env)
     env["fail"]["Code"] = exc
     with pytest.raises(SystemExit):
-        _sync_at(env, T0 + timedelta(minutes=40))
-    _sync_at(env, T0 + timedelta(minutes=60))
+        _sync_at(env, T0 + timedelta(minutes=55))
+    _sync_at(env, T0 + timedelta(minutes=75))
     assert sorted(b.app for b in env["created"]) == ["Code", "Slack"]
 
 
@@ -667,7 +669,49 @@ def test_lost_response_after_successful_post_is_not_duplicated(clipping_env):
     _two_blocks(env)
     env["lost_response"].add("Code")
     with pytest.raises(SystemExit):
-        _sync_at(env, T0 + timedelta(minutes=40))
-    _sync_at(env, T0 + timedelta(minutes=60))
+        _sync_at(env, T0 + timedelta(minutes=55))
+    _sync_at(env, T0 + timedelta(minutes=75))
     assert sorted(b.app for b in env["created"]) == ["Code", "Slack"]
     assert env["keys_queried"], "retry consulted Notion"
+
+
+def test_interrupted_activity_is_glued_before_min_duration(clipping_env):
+    """Code 3 min → Slack 1 min → Code 3 min: each Code piece alone is under
+    the 5-min minimum; glued they are one 6-min row."""
+    env = clipping_env
+    env["cfg"].activitywatch.min_block_duration_sec = 300
+    env["events"] += [
+        ("Code", "a.py", T0, T0 + timedelta(minutes=3)),
+        ("Slack", "general", T0 + timedelta(minutes=3), T0 + timedelta(minutes=4)),
+        ("Code", "a.py", T0 + timedelta(minutes=4), T0 + timedelta(minutes=7)),
+        ("Mail", "inbox", T0 + timedelta(minutes=7), T0 + timedelta(minutes=8)),
+    ]
+    _sync_at(env, T0 + timedelta(minutes=60))
+    assert [(b.app, b.start_utc, b.active_minutes()) for b in env["created"]] == [("Code", T0, 6)]
+
+
+def test_cluster_is_written_once_only_after_its_gap_has_passed(clipping_env):
+    """Until cluster_gap has passed since its last piece, a later piece could
+    still join — writing early would store it short, then a second row."""
+    env = clipping_env
+    env["events"] += [
+        ("Code", "a.py", T0, T0 + timedelta(minutes=10)),
+        ("Slack", "general", T0 + timedelta(minutes=10), T0 + timedelta(minutes=11)),
+        ("Code", "a.py", T0 + timedelta(minutes=30), T0 + timedelta(minutes=35)),
+        ("Mail", "inbox", T0 + timedelta(minutes=35), T0 + timedelta(minutes=36)),
+    ]
+    _sync_at(env, T0 + timedelta(minutes=25))
+    assert env["created"] == []
+    for minutes in (45, 70, 100, 130):
+        _sync_at(env, T0 + timedelta(minutes=minutes))
+    code = [b for b in env["created"] if b.app == "Code"]
+    assert [(b.start_utc, b.active_minutes()) for b in code] == [(T0, 15)]
+
+
+def test_since_fetch_reaches_back_a_full_cluster_gap(sync_env):
+    """A piece within cluster_gap before --since decides whether the next piece
+    starts a new row or continues one, so it must be in view."""
+    sync_env["cfg"].activitywatch.cluster_gap_sec = 1800
+    sync(dry_run=True, since="2026-04-05T00:00:00")
+    expected = datetime(2026, 4, 5, 0, 0, tzinfo=UTC)
+    assert sync_env["aw_start"] == expected - timedelta(seconds=1800) - cli.FETCH_MARGIN

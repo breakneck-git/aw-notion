@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from notion_client.errors import HTTPResponseError
 
 from .activitywatch import ActivityWatchClient
-from .blocks import compute_focus_blocks
+from .blocks import cluster_blocks, compute_focus_blocks
 from .config import load_config
 from .git_context import find_git_branch
 from .health import check_health
@@ -197,22 +197,43 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
         log.info("Incremental sync from %s", commit_from.isoformat())
         backfill = False
 
-    merge_gap = timedelta(seconds=cfg.activitywatch.merge_gap_sec)
-    start = commit_from - merge_gap - FETCH_MARGIN
-    settled_before = now - merge_gap
+    # A block is settled merge_gap after it ends; a cluster of pieces only
+    # cluster_gap after its last piece (a later piece could still join). The
+    # fetch reaches back as far, so a piece just before commit_from — which
+    # makes the next piece a continuation, not a new row — is in view.
+    lookback = timedelta(
+        seconds=max(cfg.activitywatch.merge_gap_sec, cfg.activitywatch.cluster_gap_sec)
+    )
+    start = commit_from - lookback - FETCH_MARGIN
+    settled_before = now - lookback
 
     window_events, afk_events = aw.get_all_events(
         start, now, browser_apps=cfg.activitywatch.browser_apps
     )
-    # min_duration applied below, after the open/settled split: a block too
-    # short *so far* is still open and must hold pending_since back.
-    all_blocks = compute_focus_blocks(
+    # min_duration applied below, after clustering and the open/settled split:
+    # a piece too short on its own may still be part of a long enough activity.
+    pieces = compute_focus_blocks(
         window_events,
         afk_events,
         afk_threshold_sec=cfg.activitywatch.afk_threshold_min * 60,
         merge_gap_sec=cfg.activitywatch.merge_gap_sec,
         min_duration_sec=0,
     )
+    # Excluded apps must not glue the pieces around them into one activity,
+    # and the git note is part of an activity's identity — both before clustering.
+    pieces, excluded_count = _filter_excluded(pieces, cfg.sync)
+    if excluded_count:
+        log.info(
+            "Excluded %d block(s) per config (apps=%s, url_substrings=%s, title_substrings=%s)",
+            excluded_count,
+            cfg.sync.exclude_apps,
+            cfg.sync.exclude_url_substrings,
+            cfg.sync.exclude_title_substrings,
+        )
+    for piece in pieces:
+        if piece.note is None and _looks_like_path(piece.title):
+            piece.note = find_git_branch(piece.title, piece.end_utc)
+    all_blocks = cluster_blocks(pieces, gap_sec=cfg.activitywatch.cluster_gap_sec)
     # Open = may still grow. Window events are included too: one fully covered
     # by AFK so far has no block yet, but gains one when the user returns.
     open_starts = [b.start_utc for b in all_blocks if b.end_utc > settled_before]
@@ -230,20 +251,6 @@ def _run_sync(dry_run: bool, since: str | None, debug: bool = False) -> None:
         and b.active_seconds >= cfg.activitywatch.min_block_duration_sec
     ]
     log.info("Found %d focus blocks in range", len(blocks))
-
-    blocks, excluded_count = _filter_excluded(blocks, cfg.sync)
-    if excluded_count:
-        log.info(
-            "Excluded %d block(s) per config (apps=%s, url_substrings=%s, title_substrings=%s)",
-            excluded_count,
-            cfg.sync.exclude_apps,
-            cfg.sync.exclude_url_substrings,
-            cfg.sync.exclude_title_substrings,
-        )
-
-    for block in blocks:
-        if block.note is None and _looks_like_path(block.title):
-            block.note = find_git_branch(block.title, block.end_utc)
 
     if debug:
         ax_intervals = aw.fetch_ax_intervals(start, now)

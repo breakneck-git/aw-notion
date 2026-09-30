@@ -45,12 +45,24 @@ class FocusBlock:
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _merge_intervals(
+    intervals: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    """Union of possibly-overlapping intervals, sorted and disjoint."""
+    merged: list[list[datetime]] = []
+    for s, e in sorted(intervals):
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return [(s, e) for s, e in merged]
+
+
 def _afk_overlap_seconds(
     start: datetime, end: datetime, afk_intervals: list[tuple[datetime, datetime]]
 ) -> float:
-    """Seconds of [start, end) covered by any AFK interval. ActivityWatch emits
-    alternating afk/not-afk events, so AFK intervals are non-overlapping and the
-    per-interval overlaps simply sum."""
+    """Seconds of [start, end) covered by any AFK interval. `afk_intervals`
+    must be disjoint (see _merge_intervals), so per-interval overlaps sum."""
     total = 0.0
     for a_s, a_e in afk_intervals:
         lo = start if start > a_s else a_s
@@ -77,11 +89,15 @@ def compute_focus_blocks(
     to its non-AFK portion and drop events with no active time left. `start_utc`
     stays at the event timestamp so `signature()`/dedup are unaffected
     (invariant #9) — only the active-seconds total changes."""
-    afk_intervals = [
-        (e.timestamp, e.timestamp + timedelta(seconds=e.duration))
-        for e in afk_events
-        if e.status == "afk"
-    ]
+    # aw-server stores the same AFK span many times over (overlapping copies,
+    # ~1300 a day live), so union them or each copy is subtracted again.
+    afk_intervals = _merge_intervals(
+        [
+            (e.timestamp, e.timestamp + timedelta(seconds=e.duration))
+            for e in afk_events
+            if e.status == "afk"
+        ]
+    )
 
     def active_sec(e: AWEvent) -> float:
         e_end = e.timestamp + timedelta(seconds=e.duration)

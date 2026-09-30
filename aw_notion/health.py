@@ -16,6 +16,11 @@ stays ~0), so the newest heartbeat of *either* is also held against the wall
 clock — window-watcher heartbeats continuously while alive, so this only trips
 when both are silent (afk alone can't be used: it stalls 11–34 min by itself).
 
+Bucket staleness is only a hint, though: the macOS (swift) window watcher can
+go quiet for >10 min with one window focused and later back-fill the gap
+itself ("sending old heartbeat for merging") — seen live 30.09. So a stale
+window bucket alerts only when no aw-watcher-window process is running.
+
 Every failed check is re-run once after RECHECK_SEC, and only a problem seen
 by both runs alerts. That absorbs the benign races: the RunAtLoad sync at
 login firing before ActivityWatch has started (and, once it has, before the
@@ -139,7 +144,19 @@ def send_alert(message: str) -> bool:
     return _telegram(message) or _desktop(message)
 
 
-def _problem(aw, now: datetime) -> str | None:
+def window_watcher_running() -> bool:
+    """Whether an aw-watcher-window process exists (exact name, so a shell
+    command mentioning it doesn't count). Unknown → assume running: a failed
+    probe must not turn into a false alarm."""
+    try:
+        res = subprocess.run(["pgrep", "-x", "aw-watcher-window"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("pgrep failed: %s", exc)
+        return True
+    return res.returncode == 0
+
+
+def _problem(aw, now: datetime, window_watcher_alive: Callable[[], bool]) -> str | None:
     if not aw.is_running():
         return _SERVER_DOWN
     try:
@@ -147,17 +164,22 @@ def _problem(aw, now: datetime) -> str | None:
     except Exception as exc:  # any failure here would otherwise kill the sync silently
         log.warning("GET /buckets failed: %r", exc)
         return _BUCKETS_FAILED
+    problem = None
     lag = window_lag_sec(buckets)
     if lag is not None and lag > WINDOW_LAG_ALERT_SEC:
-        return _WINDOW_DEAD
-    # Only with a window bucket present: afk alone stalls for minutes by itself.
-    window = _newest(buckets, "aw-watcher-window")
-    if window is not None:
-        afk = _newest(buckets, "aw-watcher-afk")
-        newest = max(window, afk) if afk is not None else window
-        if (now - newest).total_seconds() > WATCHERS_SILENT_ALERT_SEC:
-            return _WATCHERS_SILENT
-    return None
+        problem = _WINDOW_DEAD
+    else:
+        # Only with a window bucket present: afk alone stalls for minutes by itself.
+        window = _newest(buckets, "aw-watcher-window")
+        if window is not None:
+            afk = _newest(buckets, "aw-watcher-afk")
+            newest = max(window, afk) if afk is not None else window
+            if (now - newest).total_seconds() > WATCHERS_SILENT_ALERT_SEC:
+                problem = _WATCHERS_SILENT
+    if problem is not None and window_watcher_alive():
+        log.info("window bucket stale but aw-watcher-window is running; not alerting")
+        return None
+    return problem
 
 
 def _read_state(path: Path) -> str:
@@ -189,17 +211,18 @@ def check_health(
     alert: Callable[[str], bool] = send_alert,
     state_path: Path | None = None,
     now: Callable[[], datetime] = _utcnow,
+    window_watcher_alive: Callable[[], bool] = window_watcher_running,
 ) -> bool:
     """Alert on a dead data source. Returns False iff the sync can't run
     (aw-server down or its bucket list failing); dead watchers alert but let
     the sync proceed."""
     if state_path is None:
         state_path = ALERT_STATE_PATH
-    first = _problem(aw, now())
+    first = _problem(aw, now(), window_watcher_alive)
     problem = first
     if first is not None:
         sleep(RECHECK_SEC)
-        problem = _problem(aw, now())
+        problem = _problem(aw, now(), window_watcher_alive)
     can_sync = problem not in (_SERVER_DOWN, _BUCKETS_FAILED)
     if problem is not None and problem != first:
         # Two different problems in a row: things are still moving (typically

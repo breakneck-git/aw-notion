@@ -42,7 +42,7 @@ NOW = datetime(2026, 9, 27, 1, 0, 30, tzinfo=UTC)
 BOTH_STALE = _buckets("2026-09-27T00:00:00+00:00", "2026-09-27T00:00:00+00:00")
 
 
-def _run(snapshots, state_path, delivered=True):
+def _run(snapshots, state_path, delivered=True, watcher_alive=False):
     sleeps: list[float] = []
     alerts: list[str] = []
 
@@ -56,6 +56,7 @@ def _run(snapshots, state_path, delivered=True):
         alert=alert,
         state_path=state_path,
         now=lambda: NOW,
+        window_watcher_alive=lambda: watcher_alive,
     )
     return ok, sleeps, alerts
 
@@ -282,3 +283,25 @@ def test_stalled_afk_without_window_bucket_is_not_an_alert(tmp_path):
     b = _buckets("2026-09-27T00:30:00+00:00", None)
     ok, sleeps, alerts = _run([(True, b)], tmp_path / "a")
     assert ok and sleeps == [] and alerts == []
+
+
+def test_stale_window_bucket_with_live_watcher_process_is_not_an_alert(tmp_path):
+    """Live false alarm 30.09 06:26: the swift window watcher went quiet for
+    >10 min with one window focused (bucket last_updated lagged afk), then
+    back-filled the gap itself ("sending old heartbeat for merging"); its
+    process never exited. Staleness alone isn't death — a live process wins."""
+    for snap in (STALE, BOTH_STALE):
+        ok, _, alerts = _run([(True, snap), (True, snap)], tmp_path / "a", watcher_alive=True)
+        assert ok and alerts == []
+
+
+def test_window_watcher_process_check_matches_exact_name(monkeypatch):
+    calls = []
+
+    def fake_run(args, **k):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(health.subprocess, "run", fake_run)
+    assert health.window_watcher_running() is False
+    assert calls == [["pgrep", "-x", "aw-watcher-window"]]

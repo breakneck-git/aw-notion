@@ -115,8 +115,8 @@ def test_partial_afk_overlap_subtracted_on_merge():
     """AFK clipping applies to merged events too: the idle slice is subtracted
     from the merged block's active total, not the wall span."""
     events = [
-        win(0, 200, "Code", "file.py"),       # [0, 200] fully active
-        win(300, 300, "Code", "file.py"),     # [300, 600], gap 100 < 180 → merge
+        win(0, 200, "Code", "file.py"),  # [0, 200] fully active
+        win(300, 300, "Code", "file.py"),  # [300, 600], gap 100 < 180 → merge
     ]
     afk_events = [afk(400, 150)]  # AFK [400, 550] overlaps the 2nd event by 150s
     blocks = compute_focus_blocks(events, afk_events)
@@ -211,3 +211,18 @@ def test_multiple_afk_intervals_within_one_event_all_subtracted():
     assert len(blocks) == 1
     assert blocks[0].active_seconds == 360  # 600 - 120 - 120
     assert blocks[0].active_minutes() == 6
+
+
+def test_duplicate_overlapping_afk_events_are_counted_once():
+    """aw-server stores the same AFK span many times over (live bucket: ~1300
+    overlapping afk events a day, e.g. dozens starting at 15:21:31.211 with
+    equal duration). Summing each copy's overlap zeroed the active time of any
+    window event touching an AFK span; the union must be subtracted once."""
+    base = datetime(2026, 9, 29, 15, 0, tzinfo=UTC)
+    window = [AWEvent(timestamp=base, duration=1800.0, app="Code", title="a.py")]
+    afk = [
+        AFKEvent(timestamp=base + timedelta(minutes=20), duration=600.0, status="afk")
+        for _ in range(50)
+    ] + [AFKEvent(timestamp=base + timedelta(minutes=25), duration=300.0, status="afk")]
+    blocks = compute_focus_blocks(window, afk)
+    assert [round(b.active_seconds) for b in blocks] == [1200]
